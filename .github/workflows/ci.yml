@@ -12,8 +12,12 @@ permissions:
 
 jobs:
     test:
-        name: Test
+        name: Test (Kubernetes ${{ matrix.envtest }})
         runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                envtest: ["1.36.2", "1.37.0"]
         steps:
             - uses: actions/checkout@v7
 
@@ -25,7 +29,7 @@ jobs:
             - name: Install envtest binaries
               run: |
                   go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2
-                  echo "KUBEBUILDER_ASSETS=$(setup-envtest use 1.37.0 -p path)" >> "$GITHUB_ENV"
+                  echo "KUBEBUILDER_ASSETS=$(setup-envtest use ${{ matrix.envtest }} -p path)" >> "$GITHUB_ENV"
 
             - name: Run tests
               run: go test -count=1 -timeout 20m -v ./...

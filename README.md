@@ -173,7 +173,7 @@ Verify on the leader through its metrics (port 8080): `process_resident_memory_b
 
 ## Testing
 
-GitHub Actions runs the unit tests, the envtest suite, the kind end-to-end suite on Kubernetes 1.36 and 1.37, golangci-lint and a `go generate ./...` drift check on every push and pull request. Load tests stay local.
+GitHub Actions runs the unit tests, the envtest suite and the kind end-to-end suite on Kubernetes 1.36 and 1.37, golangci-lint and a `go generate ./...` drift check on every push and pull request. Load tests stay local.
 
 The envtest suite includes regression checks (`TestRegression*`) on the per-unit costs behind the limits, so a regression fails CI without the hour-long ramps: status bytes per exempt namespace (budget 160, measured 148.4), Deny binding bytes per namespace (75, measured 67.2), heap per watched object (1.5 KiB, measured 0.57 to 0.76) and heap per binding (0.6 MiB, measured 0.2 to 0.29). The byte sizes are deterministic, so their budgets are tight; heap varies, so its budgets are about 2x the highest measured.
 
