@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/kar-logo-dark.svg">
+    <img src="assets/kar-logo.svg" width="160" alt="Kar logo">
+  </picture>
+</p>
+
 # kar
 
 [![CI](https://github.com/zemanlx/kar/actions/workflows/ci.yml/badge.svg)](https://github.com/zemanlx/kar/actions/workflows/ci.yml) [![License](https://img.shields.io/github/license/zemanlx/kar)](https://github.com/zemanlx/kar/blob/main/LICENSE)
