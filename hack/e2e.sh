@@ -43,8 +43,11 @@ collect() {
   exit "$rc"
 }
 
-# --network=host: build container cannot resolve DNS on some hosts.
-docker buildx build --network=host --load -t kar:e2e .
+# KAR_VERSION tests a published release: the chart from GHCR, which pulls its image from GHCR.
+if [ -z "${KAR_VERSION:-}" ]; then
+  # --network=host: build container cannot resolve DNS on some hosts.
+  docker buildx build --network=host --load -t kar:e2e .
+fi
 
 "$KIND" delete cluster --name kar-e2e >/dev/null 2>&1 || true
 trap collect EXIT
@@ -59,13 +62,17 @@ nodes:
 EOF
 "$KIND" get kubeconfig --internal --name kar-e2e >bin/e2e-kubeconfig-internal
 
-"$KIND" load docker-image kar:e2e --name kar-e2e
+[ -n "${KAR_VERSION:-}" ] || "$KIND" load docker-image kar:e2e --name kar-e2e
 
 # Restricted PSA: any hardening regression fails the install.
 incluster kubectl create namespace kar-system
 incluster kubectl label namespace kar-system pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted pod-security.kubernetes.io/audit=restricted
 
-incluster helm install kar charts/kar -n kar-system --set image.repository=kar,image.tag=e2e,image.pullPolicy=Never --wait --timeout 3m
+if [ -n "${KAR_VERSION:-}" ]; then
+  incluster helm install kar oci://ghcr.io/zemanlx/charts/kar --version "$KAR_VERSION" -n kar-system --wait --timeout 3m
+else
+  incluster helm install kar charts/kar -n kar-system --set image.repository=kar,image.tag=e2e,image.pullPolicy=Never --wait --timeout 3m
+fi
 
 CGO_ENABLED=0 go test -c -tags e2e -o bin/e2e.test ./e2e/
 incluster bin/e2e.test -test.count=1 -test.v -test.timeout=40m "$@"

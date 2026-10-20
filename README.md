@@ -214,6 +214,7 @@ hack/e2e.sh
 ```
 
 - `K8S_VERSION=1.36|1.37` (default `1.37`) picks the node image.
+- `KAR_VERSION=0.1.0` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.
 - `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
 - Extra arguments go to the test binary, e.g. `hack/e2e.sh -test.run=TestHardening`.
 
@@ -221,4 +222,4 @@ Logs land in `bin/e2e-logs/`. kubectl, helm and the tests run in a container on 
 
 ## Releasing
 
-Set `version` and `appVersion` in `charts/kar/Chart.yaml` to the new version, merge, then push a tag `v<version>` on a commit CI passed. `.github/workflows/release.yml` fails unless the tag matches both, then publishes the image and chart to GHCR with attestations and creates the GitHub release. A tag with a hyphen, such as `v0.2.0-rc.1`, makes a prerelease.
+Set `version` and `appVersion` in `charts/kar/Chart.yaml` to the new version, merge, then push a tag `v<version>` on a commit CI passed. `.github/workflows/release.yml` fails unless the tag matches both, then publishes the image and chart to GHCR with attestations, creates the GitHub release, and runs the e2e suite against the published chart and image (`.github/workflows/verify-release.yml`, which can also be run by hand for any released version). A tag with a hyphen, such as `v0.2.0-rc.1`, makes a prerelease.

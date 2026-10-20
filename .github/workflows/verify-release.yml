@@ -1,0 +1,51 @@
+# Runs the e2e suite against a published release: the chart from GHCR, which pulls its image from GHCR.
+name: Verify release
+
+on:
+    workflow_dispatch:
+        inputs:
+            version:
+                description: Released version, without the v (e.g. 0.1.0)
+                required: true
+    workflow_call:
+        inputs:
+            version:
+                required: true
+                type: string
+
+permissions:
+    contents: read
+
+jobs:
+    e2e:
+        name: E2E ${{ inputs.version }} (Kubernetes ${{ matrix.k8s }})
+        runs-on: ubuntu-latest
+        timeout-minutes: 45
+        strategy:
+            fail-fast: false
+            matrix:
+                k8s: ["1.36", "1.37"] # the versions hack/e2e.sh pins a node image for
+        steps:
+            # The suite comes from the triggering ref: the tag when release.yml calls this, the chosen branch when run by hand.
+            - uses: actions/checkout@v7
+
+            - name: Set up Go
+              uses: actions/setup-go@v7
+              with:
+                  go-version-file: go.mod
+
+            - uses: azure/setup-helm@v5
+
+            - name: Run end-to-end tests
+              env:
+                  K8S_VERSION: ${{ matrix.k8s }}
+                  KAR_VERSION: ${{ inputs.version }}
+              run: hack/e2e.sh
+
+            - name: Upload e2e logs
+              if: failure()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: e2e-logs-${{ inputs.version }}-${{ matrix.k8s }}
+                  path: bin/e2e-logs/
+                  if-no-files-found: ignore
