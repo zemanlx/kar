@@ -15,10 +15,10 @@ jobs:
         name: Test
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
 
             - name: Set up Go
-              uses: actions/setup-go@v5
+              uses: actions/setup-go@v7
               with:
                   go-version-file: go.mod
 
@@ -31,14 +31,18 @@ jobs:
               run: go test -count=1 -timeout 20m -v ./...
 
     e2e:
-        name: E2E
+        name: E2E (Kubernetes ${{ matrix.k8s }})
         runs-on: ubuntu-latest
         timeout-minutes: 45
+        strategy:
+            fail-fast: false
+            matrix:
+                k8s: ["1.36", "1.37"] # the versions hack/e2e.sh pins a node image for
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
 
             - name: Set up Go
-              uses: actions/setup-go@v5
+              uses: actions/setup-go@v7
               with:
                   go-version-file: go.mod
 
@@ -49,13 +53,15 @@ jobs:
                   sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
 
             - name: Run end-to-end tests
+              env:
+                  K8S_VERSION: ${{ matrix.k8s }}
               run: hack/e2e.sh
 
             - name: Upload e2e logs
               if: failure()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
-                  name: e2e-logs
+                  name: e2e-logs-${{ matrix.k8s }}
                   path: bin/e2e-logs/
                   if-no-files-found: ignore
 
@@ -63,10 +69,10 @@ jobs:
         name: Lint
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
 
             - name: Set up Go
-              uses: actions/setup-go@v5
+              uses: actions/setup-go@v7
               with:
                   go-version-file: go.mod
 
@@ -81,7 +87,7 @@ jobs:
                   fi
 
             - name: GolangCI-Lint
-              uses: golangci/golangci-lint-action@v7
+              uses: golangci/golangci-lint-action@v9
               with:
                   version: latest
                   install-mode: goinstall

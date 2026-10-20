@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"runtime"
 	"slices"
 	"strconv"
@@ -11,14 +12,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/wait"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	karv1alpha1 "github.com/zemanlx/kar/api/v1alpha1"
 )
+
+// TestMain sets a discarding logger; without one controller-runtime prints a stack trace mid-run.
+func TestMain(m *testing.M) {
+	ctrl.SetLogger(logr.Discard())
+	os.Exit(m.Run())
+}
 
 // Outcomes of converge and settle.
 const (
