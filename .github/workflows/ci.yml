@@ -1,0 +1,96 @@
+# Unit tests, the envtest suite, the kind end-to-end suite, and golangci-lint.
+# Load tests (`go test -tags load`) stay local.
+name: CI
+
+on:
+    push:
+        branches: [main, master]
+    pull_request:
+
+permissions:
+    contents: read
+
+jobs:
+    test:
+        name: Test
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Set up Go
+              uses: actions/setup-go@v5
+              with:
+                  go-version-file: go.mod
+
+            - name: Install envtest binaries
+              run: |
+                  go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2
+                  echo "KUBEBUILDER_ASSETS=$(setup-envtest use 1.37.0 -p path)" >> "$GITHUB_ENV"
+
+            - name: Run tests
+              run: go test -count=1 -timeout 20m -v ./...
+
+    e2e:
+        name: E2E
+        runs-on: ubuntu-latest
+        timeout-minutes: 45
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Set up Go
+              uses: actions/setup-go@v5
+              with:
+                  go-version-file: go.mod
+
+            - name: Install Helm
+              run: |
+                  curl -fsSL -o /tmp/helm.tgz "https://get.helm.sh/helm-v3.20.2-linux-amd64.tar.gz"
+                  tar -xzf /tmp/helm.tgz -C /tmp
+                  sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+
+            - name: Run end-to-end tests
+              run: hack/e2e.sh
+
+            - name: Upload e2e logs
+              if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: e2e-logs
+                  path: bin/e2e-logs/
+                  if-no-files-found: ignore
+
+    lint:
+        name: Lint
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Set up Go
+              uses: actions/setup-go@v5
+              with:
+                  go-version-file: go.mod
+
+            - name: Check generated code is up to date
+              run: |
+                  go generate ./...
+                  if [ -n "$(git status --porcelain)" ]; then
+                      git status --porcelain
+                      git diff
+                      echo "generated code is stale: run go generate ./... and commit the result" >&2
+                      exit 1
+                  fi
+
+            - name: GolangCI-Lint
+              uses: golangci/golangci-lint-action@v7
+              with:
+                  version: latest
+                  install-mode: goinstall
+                  # Skip the network schema fetch, which flakes on runners.
+                  # `golangci-lint run` still validates the config at runtime.
+                  verify: false
+                  args: --timeout=5m
+
+            - name: Check formatting
+              run: |
+                  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+                  golangci-lint fmt --diff

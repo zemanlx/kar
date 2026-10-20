@@ -1,0 +1,64 @@
+# GolangCI-Lint configuration (v2)
+# Docs: https://golangci-lint.run/usage/configuration/
+version: "2"
+run:
+  tests: true
+  # e2e and load files are the only ones behind build tags, and CI lints them.
+  build-tags:
+    - e2e
+    - load
+linters:
+  default: all
+  disable:
+    - depguard
+    - exhaustruct
+    - exhaustruct_v5
+    - funcorder
+    - godoclint
+    - gomodguard # deprecated; superseded by gomodguard_v2 (kept via default: all)
+    - ireturn
+    - lll
+    - noinlineerr
+    - nonamedreturns
+    - testpackage
+    - varnamelen
+    - wsl # deprecated; superseded by wsl_v5 (kept via default: all)
+  settings:
+    gomoddirectives:
+      # go.mod replaces github.com/zemanlx/kat with the sibling checkout (../kat).
+      replace-local: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # goconst on test fixtures (repeated literals like "apiVersion", "Pod")
+      # hurts readability more than it helps; keep it for production code only.
+      - linters:
+          - goconst
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/zemanlx)
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

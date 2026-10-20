@@ -1,0 +1,12 @@
+image:
+  repository: ghcr.io/zemanlx/kar
+  tag: ""          # empty means .Chart.AppVersion
+  pullPolicy: IfNotPresent
+replicas: 3
+defaultTTL: 192h
+resources:          # 100k Pods / 4000 namespaces peaked at 234 MiB RSS; see README "Sizing"
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    memory: 512Mi
