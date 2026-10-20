@@ -1,0 +1,93 @@
+# Publishes the image to ghcr.io/zemanlx/kar and the chart to oci://ghcr.io/zemanlx/charts/kar for a vX.Y.Z tag,
+# with build provenance attestations, then creates the GitHub release.
+name: Release
+
+on:
+    push:
+        tags: ["v*"]
+
+permissions:
+    contents: write # the GitHub release
+    packages: write # image and chart in GHCR
+    id-token: write # attestation signing
+    attestations: write
+
+env:
+    IMAGE: ghcr.io/${{ github.repository_owner }}/kar
+    CHARTS: ghcr.io/${{ github.repository_owner }}/charts
+
+jobs:
+    release:
+        name: Release
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+
+            # The chart's default image tag is its appVersion, so a mismatch would ship a chart that pulls the wrong image.
+            - name: Check the tag matches the chart
+              id: version
+              run: |
+                  version="${GITHUB_REF_NAME#v}"
+                  chart="$(yq '.version' charts/kar/Chart.yaml)"
+                  app="$(yq '.appVersion' charts/kar/Chart.yaml)"
+                  if [ "$chart" != "$version" ] || [ "$app" != "$version" ]; then
+                      echo "tag $GITHUB_REF_NAME needs Chart.yaml version and appVersion $version, got $chart and $app" >&2
+                      exit 1
+                  fi
+                  echo "version=$version" >> "$GITHUB_OUTPUT"
+
+            - uses: docker/setup-buildx-action@v4
+
+            - uses: docker/login-action@v4
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - id: meta
+              uses: docker/metadata-action@v6
+              with:
+                  images: ${{ env.IMAGE }}
+                  tags: |
+                      type=semver,pattern={{version}}
+                      type=semver,pattern={{major}}.{{minor}}
+
+            - id: image
+              uses: docker/build-push-action@v7
+              with:
+                  context: .
+                  platforms: linux/amd64,linux/arm64
+                  push: true
+                  tags: ${{ steps.meta.outputs.tags }}
+                  labels: ${{ steps.meta.outputs.labels }}
+
+            - uses: actions/attest-build-provenance@v4
+              with:
+                  subject-name: ${{ env.IMAGE }}
+                  subject-digest: ${{ steps.image.outputs.digest }}
+                  push-to-registry: true
+
+            - uses: azure/setup-helm@v5
+
+            - name: Push the chart
+              id: chart
+              run: |
+                  echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+                  helm package charts/kar --destination dist
+                  helm push "dist/kar-${{ steps.version.outputs.version }}.tgz" "oci://$CHARTS" 2>&1 | tee push.log
+                  echo "digest=$(grep -o 'sha256:[0-9a-f]*' push.log)" >> "$GITHUB_OUTPUT"
+
+            - uses: actions/attest-build-provenance@v4
+              with:
+                  subject-name: ${{ env.CHARTS }}/kar
+                  subject-digest: ${{ steps.chart.outputs.digest }}
+                  push-to-registry: true
+
+            - name: Create the GitHub release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  prerelease=""
+                  case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+                  gh release create "$GITHUB_REF_NAME" "dist/kar-${{ steps.version.outputs.version }}.tgz" \
+                      --verify-tag --generate-notes $prerelease

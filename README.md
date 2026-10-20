@@ -19,12 +19,19 @@ Opt in on a `ValidatingAdmissionPolicyBinding` with annotations:
 ## Install
 
 ```bash
-helm install kar charts/kar -n kar-system --create-namespace
+helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.1.0 -n kar-system --create-namespace
+```
+
+The image `ghcr.io/zemanlx/kar` is built for `linux/amd64` and `linux/arm64`. The image and the chart carry GitHub build provenance attestations:
+
+```bash
+gh attestation verify oci://ghcr.io/zemanlx/kar:0.1.0 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.1.0 --owner zemanlx
 ```
 
 The ClusterRole grants get/list/watch on every resource, Secrets included, because the audit reads whatever a policy matches. To grant less, narrow the first rule to the kinds your policies match.
 
-Helm installs `charts/kar/crds/` on first install only. It never upgrades or deletes CRDs, so on upgrade run `kubectl apply -f charts/kar/crds/` first.
+Helm installs `charts/kar/crds/` on first install only. It never upgrades or deletes CRDs, so on upgrade apply the new chart's CRDs first: `helm pull oci://ghcr.io/zemanlx/charts/kar --version <version> --untar` and `kubectl apply -f kar/crds/`.
 
 ## How it works
 
@@ -211,3 +218,7 @@ hack/e2e.sh
 - Extra arguments go to the test binary, e.g. `hack/e2e.sh -test.run=TestHardening`.
 
 Logs land in `bin/e2e-logs/`. kubectl, helm and the tests run in a container on the kind Docker network, because VPN clients can drop the host's route to Docker networks.
+
+## Releasing
+
+Set `version` and `appVersion` in `charts/kar/Chart.yaml` to the new version, merge, then push a tag `v<version>` on a commit CI passed. `.github/workflows/release.yml` fails unless the tag matches both, then publishes the image and chart to GHCR with attestations and creates the GitHub release. A tag with a hyphen, such as `v0.2.0-rc.1`, makes a prerelease.
