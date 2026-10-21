@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/util/workqueue"
@@ -83,7 +84,7 @@ type auditor struct {
 	compiled *evaluator.CompiledValidating
 	watched  []watched
 	ttl      time.Duration
-	inputs   string // the policy's UID and generation and the source's generation, see Reconciler.fingerprint
+	inputs   string // the UIDs and generations of the policy and the source, see Reconciler.fingerprint
 	state    exemptions
 
 	seenMu  sync.Mutex
@@ -268,11 +269,12 @@ func (p *pass) check(ctx context.Context) (*checked, ctrl.Result, error) {
 			return nil, ctrl.Result{}, fmt.Errorf("get policy: %w", err)
 		}
 
+		msg := fmt.Sprintf("ValidatingAdmissionPolicy %q not found", p.source.Spec.PolicyName)
 		p.r.forget(p.source.Name)
-		setCondition(p.pe, karv1alpha1.ConditionSynced, metav1.ConditionFalse, karv1alpha1.ReasonPolicyNotFound,
-			fmt.Sprintf("ValidatingAdmissionPolicy %q not found", p.source.Spec.PolicyName))
+		setCondition(p.pe, karv1alpha1.ConditionSynced, metav1.ConditionFalse, karv1alpha1.ReasonPolicyNotFound, msg)
+		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonPolicyNotFound, msg)
 
-		return nil, ctrl.Result{RequeueAfter: resync}, p.save(ctx)
+		return nil, ctrl.Result{RequeueAfter: resync}, errors.Join(p.r.remove(ctx, p.source.Name), p.save(ctx))
 	}
 
 	compiled, issues, err := p.r.compile(policy, p.source)
@@ -333,7 +335,7 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 	p.r.mu.Unlock()
 
 	now := time.Now()
-	inputs := fmt.Sprintf("%s/%d/%d", c.policy.UID, c.policy.Generation, p.source.Generation)
+	inputs := fmt.Sprintf("%s/%d/%s/%d", c.policy.UID, c.policy.Generation, p.source.UID, p.source.Generation)
 
 	a.mu.Lock()
 	a.source, a.policy, a.compiled, a.watched, a.ttl = p.source, c.policy, c.compiled, c.watched, ttlOf(p.source, p.r.DefaultTTL)
@@ -371,7 +373,7 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 
 	recordPass(p.source.Name, counts, len(a.state))
 
-	latched, err := p.latched(ctx)
+	latched, err := p.latched(ctx, c.policy.UID)
 	if err != nil {
 		return ctrl.Result{}, p.fail(ctx, karv1alpha1.ReasonReadFailed, err)
 	}
@@ -416,14 +418,23 @@ func (p *pass) writeAndBind(ctx context.Context, a *auditor, latched bool, now t
 	return res, err
 }
 
-// latched reports whether kar has enforced p's binding.
-func (p *pass) latched(ctx context.Context) (bool, error) {
+// latched reports whether kar has enforced p's binding under the policy with UID uid. A Deny binding left
+// by an earlier policy or source binding of the same name does not count; the garbage collector removes the
+// latter only some time after its owner is gone. Empty observed inputs mean an enforce binding switched to
+// auto, whose clock enforce cleared.
+func (p *pass) latched(ctx context.Context, uid types.UID) (bool, error) {
 	derived, err := p.r.derived(ctx, p.source.Name)
 	if err != nil {
 		return false, err
 	}
 
-	return owned(derived, p.source.Name), nil
+	if !owned(derived, p.source.Name) || metav1.GetControllerOf(derived).UID != p.source.UID {
+		return false, nil
+	}
+
+	inputs := p.pe.Status.ObservedInputs
+
+	return inputs == "" || strings.HasPrefix(inputs, string(uid)+"/"), nil
 }
 
 // clock keeps the observation window of a binding. The window restarts when the inputs change and is cleared

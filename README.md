@@ -113,13 +113,13 @@ status:
   - expiration: "2026-10-29T09:00:00Z"
     firstSeen: "2026-10-21T09:00:00Z"
     name: legacy-app
-  observedInputs: 5f0b1c2e-8c1a-4a44-9d3e-2b7f6f1a9c10/1/1
+  observedInputs: 5f0b1c2e-8c1a-4a44-9d3e-2b7f6f1a9c10/1/b3b09ad0-709d-419c-94e1-510a8d680dab/1
   observingSince: "2026-10-21T09:00:00Z"
 ```
 
 After the switch, `Enforcing` is `True` with reason `Enforcing` and message `the derived binding exempts the listed namespaces`, and `observingSince` stays as it was.
 
-`status.observingSince` is when the clock started. `status.observedInputs` holds the policy UID and the policy and source binding generations it started under. The `Enforcing` condition shows the effective mode. While kar waits, its message gives the switch time.
+`status.observingSince` is when the clock started. `status.observedInputs` holds the UID and generation of the policy and of the source binding it started under, so deleting and recreating either one restarts the clock. The `Enforcing` condition shows the effective mode. While kar waits, its message gives the switch time.
 
 kar switches the binding to `enforce` on its own one TTL after `observingSince` (8 days by default). The switch happens within seconds of that deadline. kar never edits the source binding, so the annotation stays `auto` and GitOps tools see no drift.
 
@@ -186,7 +186,7 @@ flowchart LR
 4. **Enforce.** In `enforce` mode kar also writes a Deny binding named `<source>-enforce` (a name too long for that is shortened with a hash suffix): the same policy and match as the source binding, plus a `kubernetes.io/metadata.name NotIn [exempt namespaces]` namespace selector. New violations are denied everywhere except the exempt namespaces, where the source binding's own actions (for example `Warn`) still apply. In `observe` mode kar writes no Deny binding.
 5. **Auto.** `auto` observes until `status.observingSince` plus the TTL, then writes the Deny binding from step 4.
    - The clock starts on the first pass where the policy is auditable and the watched resources have synced. kar downtime after that still counts.
-   - Before the switch, a spec change to the policy or the source binding restarts the clock, since what the policy denies may have changed. So does deleting and recreating the policy, or deleting the `PolicyExemption`. The restart waits for the replacement informers to sync, so `auto` does not switch on the old audit. Editing the `mode` or `ttl` annotation does not restart the clock, but a new TTL moves the deadline.
+   - Before the switch, a spec change to the policy or the source binding restarts the clock, since what the policy denies may have changed. So does deleting and recreating the policy or the source binding, or deleting the `PolicyExemption`. The restart waits for the replacement informers to sync, so `auto` does not switch on the old audit. Editing the `mode` or `ttl` annotation does not restart the clock, but a new TTL moves the deadline.
    - After the switch, `auto` stays enforcing: a later TTL or policy change does not turn it off.
    - `observe` keeps the clock too, so switching `observe` to `auto` counts the time already observed. `enforce` clears it.
 6. **Expire.** The TTL slides: a namespace stays exempt until one TTL after kar last saw a violator in it. Once a minute kar refreshes the exemptions of namespaces that still have violators, from the in-memory index, and drops namespaces that have expired or been deleted. Then it updates the status and the Deny binding.
@@ -202,6 +202,7 @@ What makes kar re-evaluate:
 Ownership and failure handling:
 
 - The `PolicyExemption` and the Deny binding are owned by the source binding. Removing the mode annotation makes kar delete them, and deleting the source binding lets the garbage collector delete them even when kar is down.
+- Deleting the policy makes kar remove the Deny binding and keep the `PolicyExemption`, so its exemptions survive. A policy recreated under the same name starts a fresh `auto` window, also when it was recreated while kar was down.
 - A policy kar cannot audit gets `Auditable=False` and no Deny binding. See [What kar can audit](#what-kar-can-audit).
 - The `PolicyExemption` status is kar's durable state. A new leader recovers the exemptions from it and from the Deny binding, then refreshes them on its first pass.
 
@@ -325,7 +326,7 @@ Also useful for [Sizing](#sizing): `process_resident_memory_bytes` and `go_memst
 | `Observe` | `Enforcing=False` | Observe mode, or `auto` still waiting for its deadline. No Deny binding |
 | `Synced` | `Synced=True` | Exemptions match the audit |
 | `StateTooLarge` | `Synced=False` | The API server rejected the status as too large; see [Limits](#limits) |
-| `PolicyNotFound` | `Synced=False` | The binding's policy is missing |
+| `PolicyNotFound` | `Synced=False`, `Enforcing=False` | The binding's policy is missing; kar removes the Deny binding |
 | `InformerSyncing` | `Synced=False` | Waiting for the initial list of watched resources |
 | `DiscoveryFailed` | `Synced=False` | API discovery failed |
 | `InformerFailed` | `Synced=False` | An informer could not be started or restarted |

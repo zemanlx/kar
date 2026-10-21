@@ -554,6 +554,51 @@ func enforcingIs(ctx context.Context, c client.Client, status metav1.ConditionSt
 	return nil
 }
 
+// derivedGone returns an error unless the derived binding of the source is absent.
+func derivedGone(ctx context.Context, c client.Client) error {
+	err := c.Get(ctx, client.ObjectKey{Name: derivedName(sourceName)}, &admissionregv1.ValidatingAdmissionPolicyBinding{})
+	if err == nil {
+		return errStillDerived
+	}
+
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get derived binding: %w", err)
+	}
+
+	return nil
+}
+
+// deletePolicy deletes the source policy, waits until it is gone, and returns it for recreation.
+func deletePolicy(t *testing.T, c client.Client) *admissionregv1.ValidatingAdmissionPolicy {
+	t.Helper()
+
+	ctx := t.Context()
+	policy := &admissionregv1.ValidatingAdmissionPolicy{}
+
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, policy); err != nil {
+		t.Fatalf("get policy: %v", err)
+	}
+
+	if err := c.Delete(ctx, policy); err != nil {
+		t.Fatalf("delete policy: %v", err)
+	}
+
+	eventually(t, time.Minute, func() error {
+		err := c.Get(ctx, client.ObjectKey{Name: sourceName}, &admissionregv1.ValidatingAdmissionPolicy{})
+		if err == nil {
+			return errStillPresent
+		}
+
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("get policy: %w", err)
+		}
+
+		return nil
+	})
+
+	return policy
+}
+
 func TestAutoSwitchesAfterTTL(t *testing.T) {
 	t.Parallel()
 
@@ -718,6 +763,113 @@ func TestAutoPolicyRecreateResetsClock(t *testing.T) {
 		}
 
 		return nil
+	})
+}
+
+func TestAutoPolicyRecreatedWhileDownObservesAgain(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	stop := startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "3s"}))
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	since, _ := waitClock(t, c)
+
+	stop()
+
+	// The window that restarts below must stay open, so the binding cannot switch again during the test.
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[ttlAnnotation] = "1h"
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("raise ttl: %v", err)
+	}
+
+	policy := deletePolicy(t, c)
+
+	// The clock is kept to whole seconds, so wait past one before the new window can show.
+	time.Sleep(1100 * time.Millisecond)
+
+	createAll(t, c, []client.Object{&admissionregv1.ValidatingAdmissionPolicy{Name: sourceName, Spec: policy.Spec}})
+	startController(t, cfg)
+
+	eventually(t, time.Minute, func() error {
+		if err := derivedGone(ctx, c); err != nil {
+			return err
+		}
+
+		got, _, err := observingSince(ctx, c)
+		if err != nil {
+			return err
+		}
+
+		if !got.After(since) {
+			return fmt.Errorf("%w: observingSince %s, want after %s", errMismatch, got, since)
+		}
+
+		return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve)
+	})
+}
+
+// TestAutoBindingRecreatedObservesAgain recreates the source binding before the garbage collector has removed what
+// kar wrote for the old one. envtest runs no garbage collector, so the old PolicyExemption and Deny binding stay.
+func TestAutoBindingRecreatedObservesAgain(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	objs := violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "3s"})
+	createAll(t, c, objs)
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	since, _ := waitClock(t, c)
+
+	b := objs[len(objs)-1].(*admissionregv1.ValidatingAdmissionPolicyBinding) //nolint:forcetypeassert // the fixture ends with the binding
+	if err := c.Delete(ctx, b); err != nil {
+		t.Fatalf("delete binding: %v", err)
+	}
+
+	// The clock is kept to whole seconds, so wait past one before the new window can show.
+	time.Sleep(1100 * time.Millisecond)
+
+	createAll(t, c, []client.Object{&admissionregv1.ValidatingAdmissionPolicyBinding{
+		Name:        sourceName,
+		Annotations: map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "1h"},
+		Spec:        b.Spec,
+	}})
+
+	eventually(t, time.Minute, func() error {
+		if err := derivedGone(ctx, c); err != nil {
+			return err
+		}
+
+		got, _, err := observingSince(ctx, c)
+		if err != nil {
+			return err
+		}
+
+		if !got.After(since) {
+			return fmt.Errorf("%w: observingSince %s, want after %s", errMismatch, got, since)
+		}
+
+		return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve)
 	})
 }
 
@@ -1403,6 +1555,43 @@ func TestPinnedVersionViolationIsExempted(t *testing.T) {
 	startController(t, cfg)
 
 	eventually(t, 30*time.Second, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+}
+
+// TestPolicyDeleteRemovesDenyBinding checks that deleting the policy removes the Deny binding kar wrote for
+// it, so a policy recreated under the same name is observed first. The exemptions stay.
+func TestPolicyDeleteRemovesDenyBinding(t *testing.T) {
+	t.Parallel()
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeEnforce}))
+
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	deletePolicy(t, c)
+
+	eventually(t, time.Minute, func() error { return derivedGone(ctx, c) })
+
+	eventually(t, time.Minute, func() error {
+		pe := &karv1alpha1.PolicyExemption{}
+		if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+			return fmt.Errorf("get exemption: %w", err)
+		}
+
+		for _, typ := range []string{karv1alpha1.ConditionSynced, karv1alpha1.ConditionEnforcing} {
+			cond := meta.FindStatusCondition(pe.Status.Conditions, typ)
+			if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != karv1alpha1.ReasonPolicyNotFound {
+				return fmt.Errorf("%w: %s %+v, want False %s", errMismatch, typ, cond, karv1alpha1.ReasonPolicyNotFound)
+			}
+		}
+
+		return nil
+	})
+
+	if err := recorded(ctx, c); err != nil {
+		t.Fatalf("exemption dropped with the policy: %v", err)
+	}
 }
 
 func TestUnauditablePolicyRemovesDenyBinding(t *testing.T) {
