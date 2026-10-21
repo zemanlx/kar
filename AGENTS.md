@@ -9,7 +9,7 @@ changing `internal/controller`.
 ```bash
 export KUBEBUILDER_ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2 use 1.37.0 -p path)
 go generate ./...                                              # DeepCopy and CRD from api/v1alpha1/types.go
-go test -race -count=1 ./...                                   # ~2.5 min
+go test -race -count=1 ./...                                   # ~2.5 min with -race (~80s without)
 go test -count=1 -v -run TestName ./internal/controller/      # one test
 golangci-lint run ./... && golangci-lint run --build-tags e2e ./... && golangci-lint run --build-tags load ./...
 golangci-lint fmt

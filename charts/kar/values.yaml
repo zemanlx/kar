@@ -4,6 +4,10 @@ image:
   pullPolicy: IfNotPresent
 replicas: 3
 defaultTTL: 192h
+rbac:
+  create: true       # false binds rbac.clusterRoleName and does not create a ClusterRole
+  clusterRoleName: "" # empty uses the release name; required when create is false
+  rules: []          # replaces get/list/watch on every resource; write rules stay when create is true
 resources:          # 100k Pods / 4000 namespaces peaked at 234 MiB RSS; see README "Sizing"
   requests:
     cpu: 100m

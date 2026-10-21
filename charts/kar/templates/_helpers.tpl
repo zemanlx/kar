@@ -26,3 +26,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "kar.image" -}}
 {{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
 {{- end -}}
+
+{{- define "kar.clusterRoleName" -}}
+{{- if .Values.rbac.create -}}
+{{- .Values.rbac.clusterRoleName | default (include "kar.fullname" .) -}}
+{{- else -}}
+{{- required "rbac.clusterRoleName is required when rbac.create is false" .Values.rbac.clusterRoleName -}}
+{{- end -}}
+{{- end -}}
