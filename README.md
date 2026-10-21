@@ -129,6 +129,35 @@ When the switch happens, `Enforcing` becomes True, and kar writes a Deny binding
 kubectl get validatingadmissionpolicybinding require-owner-enforce -o yaml
 ```
 
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: require-owner-enforce
+  ownerReferences:
+  - apiVersion: admissionregistration.k8s.io/v1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ValidatingAdmissionPolicyBinding
+    name: require-owner
+    uid: 23e7f324-8d2b-403d-9d9b-c852366488d0
+spec:
+  matchResources:
+    matchPolicy: Equivalent
+    namespaceSelector:
+      matchExpressions:
+      - key: kubernetes.io/metadata.name
+        operator: NotIn
+        values:
+        - legacy-app
+    objectSelector: {}
+  policyName: require-owner
+  validationActions:
+  - Deny
+```
+
+It copies the source binding's spec, with `validationActions` set to `Deny` and the exempt namespaces appended as a `NotIn` expression. kar carries over no annotations, so the Deny binding is never opted in itself. The source binding still applies as written: here it keeps warning in `legacy-app`.
+
 Fix the violators and let the exemptions expire. See [How it works](#how-it-works) for the full lifecycle and [What kar can audit](#what-kar-can-audit) for policies kar cannot evaluate.
 
 ### Manual mode
