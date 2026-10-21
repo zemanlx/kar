@@ -350,7 +350,7 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 	a.mu.Unlock()
 
 	// No lock is held while waiting on informers: their transforms take a.mu.
-	active, ready, pending, err := p.r.syncWatches(ctx, c.watched)
+	active, ready, pending, err := p.r.syncWatches(ctx, c.watched, p.source.Name+"="+inputs)
 	if err != nil {
 		return ctrl.Result{}, p.fail(ctx, karv1alpha1.ReasonInformerFailed, err)
 	}
@@ -376,9 +376,9 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 		return ctrl.Result{}, p.fail(ctx, karv1alpha1.ReasonReadFailed, err)
 	}
 
-	p.clock(inputs, latched, pending, now)
+	p.clock(inputs, latched, now)
 
-	res, err := p.writeAndBind(ctx, a, latched, pending, now)
+	res, err := p.writeAndBind(ctx, a, latched, now)
 
 	if pending && res.RequeueAfter > syncPoll {
 		res.RequeueAfter = syncPoll // pick up the swap soon
@@ -389,7 +389,7 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 
 // writeAndBind writes the status, then binds the mode the binding is in now. An auto binding still observing
 // wakes at its deadline, so it does not wait for the next resync.
-func (p *pass) writeAndBind(ctx context.Context, a *auditor, latched, pending bool, now time.Time) (ctrl.Result, error) {
+func (p *pass) writeAndBind(ctx context.Context, a *auditor, latched bool, now time.Time) (ctrl.Result, error) {
 	stored, err := p.writeState(ctx, a)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -400,14 +400,8 @@ func (p *pass) writeAndBind(ctx context.Context, a *auditor, latched, pending bo
 		since = p.pe.Status.ObservingSince.Time
 	}
 
-	// While a replacement informer is pending, the active one audits the old inputs, so only the latch can enforce.
-	clockSince := since
-	if pending {
-		clockSince = time.Time{}
-	}
-
 	deadline := since.Add(a.ttl)
-	eff := effectiveMode(mode(p.source), clockSince, a.ttl, latched, now)
+	eff := effectiveMode(mode(p.source), since, a.ttl, latched, now)
 
 	res := ctrl.Result{RequeueAfter: resync}
 	if stored {
@@ -415,7 +409,7 @@ func (p *pass) writeAndBind(ctx context.Context, a *auditor, latched, pending bo
 	}
 
 	// A zero RequeueAfter means no requeue, so the wait is at least a second.
-	if mode(p.source) == modeAuto && eff == modeObserve && !clockSince.IsZero() {
+	if mode(p.source) == modeAuto && eff == modeObserve && !since.IsZero() {
 		res.RequeueAfter = min(res.RequeueAfter, max(time.Until(deadline), time.Second))
 	}
 
@@ -433,16 +427,14 @@ func (p *pass) latched(ctx context.Context) (bool, error) {
 }
 
 // clock keeps the observation window of a binding. The window restarts when the inputs change and is cleared
-// under enforce. A latched auto binding enforces regardless, so it keeps the window as it is. While a replacement
-// informer is pending, the active one audits the old inputs, so the window is kept too.
-func (p *pass) clock(inputs string, latched, pending bool, now time.Time) {
+// under enforce. A latched auto binding enforces regardless, so it keeps the window as it is.
+func (p *pass) clock(inputs string, latched bool, now time.Time) {
 	st := &p.pe.Status
 
 	switch m := mode(p.source); {
 	case m == modeEnforce:
 		st.ObservingSince, st.ObservedInputs = nil, ""
 	case m == modeAuto && latched:
-	case pending:
 	case st.ObservingSince == nil || st.ObservedInputs != inputs:
 		st.ObservingSince, st.ObservedInputs = new(metav1.NewTime(now)), inputs
 	}

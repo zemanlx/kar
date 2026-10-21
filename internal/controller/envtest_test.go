@@ -1279,6 +1279,49 @@ func TestPolicyChangeReevaluates(t *testing.T) {
 	}
 }
 
+// TestNewSourceOnSharedInformerKeepsExemptions checks that a source bound while another source already
+// watches the same resource never publishes a Deny binding before its own audit has run.
+func TestNewSourceOnSharedInformerKeepsExemptions(t *testing.T) {
+	t.Parallel()
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeEnforce}))
+
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	// The second source matches the same ConfigMaps, so it shares the informer the first one has active.
+	second := violatingFixture(map[string]string{modeAnnotation: modeEnforce})
+	policy, okPolicy := second[2].(*admissionregv1.ValidatingAdmissionPolicy)
+
+	binding, okBinding := second[3].(*admissionregv1.ValidatingAdmissionPolicyBinding)
+	if !okPolicy || !okBinding {
+		t.Fatal("violatingFixture no longer has a policy and binding at 2 and 3")
+	}
+
+	policy.Name = "second"
+	binding.Name, binding.Spec.PolicyName = "second", "second"
+	createAll(t, c, []client.Object{policy, binding})
+
+	// A stale audit writes the first derived binding without exemptions, so check it as soon as it appears.
+	err := wait.PollUntilContextTimeout(ctx, 20*time.Millisecond, time.Minute, true, func(ctx context.Context) (bool, error) {
+		b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+		if err := c.Get(ctx, client.ObjectKey{Name: derivedName("second")}, b); err != nil {
+			return false, client.IgnoreNotFound(err)
+		}
+
+		if got := notIn(b); !slices.Equal(got, []string{"bad"}) {
+			t.Fatalf("first derived binding of second exempts %v, want [bad]", got)
+		}
+
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("derived binding of second not created: %v", err)
+	}
+}
+
 // widgetCRD is served at v1 (storage) and v1beta1 with one schema, so a rule can name either version.
 func widgetCRD() *apiextensionsv1.CustomResourceDefinition {
 	validation := &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{Type: "object", XPreserveUnknownFields: new(true)}}

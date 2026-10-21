@@ -260,14 +260,11 @@ func TestPassClock(t *testing.T) {
 		inputs     string    // the inputs the window started under
 		newInputs  string    // the inputs of this pass
 		latched    bool
-		pending    bool
 		wantSince  time.Time // zero when the window is cleared
 		wantInputs string
 	}{
 		{name: "enforce clears", mode: modeEnforce, since: t0, inputs: "a", newInputs: "a"},
 		{name: "auto latched keeps", mode: modeAuto, latched: true, since: t0, inputs: "a", newInputs: "b", wantSince: t0, wantInputs: "a"},
-		{name: "pending keeps with changed inputs", mode: modeAuto, pending: true, since: t0, inputs: "a", newInputs: "b", wantSince: t0, wantInputs: "a"},
-		{name: "pending keeps an unstarted window", mode: modeAuto, pending: true, newInputs: "b"},
 		{name: "nil clock sets since and inputs", mode: modeAuto, newInputs: "b", wantSince: now, wantInputs: "b"},
 		{name: "changed inputs reset", mode: modeAuto, since: t0, inputs: "a", newInputs: "b", wantSince: now, wantInputs: "b"},
 		{name: "same inputs keep", mode: modeAuto, since: t0, inputs: "a", newInputs: "a", wantSince: t0, wantInputs: "a"},
@@ -287,7 +284,7 @@ func TestPassClock(t *testing.T) {
 			}
 
 			p.pe.Status.ObservedInputs = tt.inputs
-			p.clock(tt.newInputs, tt.latched, tt.pending, now)
+			p.clock(tt.newInputs, tt.latched, now)
 
 			var gotSince time.Time
 			if p.pe.Status.ObservingSince != nil {
