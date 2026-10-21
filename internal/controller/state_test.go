@@ -211,3 +211,38 @@ func TestToStatusAndNeedsWrite(t *testing.T) {
 		})
 	}
 }
+
+func TestEffectiveMode(t *testing.T) {
+	t.Parallel()
+
+	t0 := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	deadline := t0.Add(testTTL)
+
+	tests := []struct {
+		name    string
+		mode    string
+		since   time.Time
+		latched bool
+		now     time.Time
+		want    string
+	}{
+		{name: "observe", mode: modeObserve, since: t0, now: deadline.Add(time.Hour), want: modeObserve},
+		{name: "enforce", mode: modeEnforce, now: t0, want: modeEnforce},
+		{name: "auto with no clock", mode: modeAuto, now: deadline, want: modeObserve},
+		{name: "auto before the deadline", mode: modeAuto, since: t0, now: deadline.Add(-time.Second), want: modeObserve},
+		{name: "auto at the deadline", mode: modeAuto, since: t0, now: deadline, want: modeEnforce},
+		{name: "auto after the deadline", mode: modeAuto, since: t0, now: deadline.Add(time.Hour), want: modeEnforce},
+		{name: "auto latched with no clock", mode: modeAuto, latched: true, now: t0, want: modeEnforce},
+		{name: "auto latched before the deadline", mode: modeAuto, since: t0, latched: true, now: deadline.Add(-time.Second), want: modeEnforce},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := effectiveMode(tt.mode, tt.since, testTTL, tt.latched, tt.now); got != tt.want {
+				t.Errorf("effectiveMode() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

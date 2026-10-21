@@ -495,6 +495,250 @@ func TestShortTTLStatusTracksExpiration(t *testing.T) {
 	})
 }
 
+// observingSince returns the observation clock of the exemption and the inputs it started under. The clock is
+// zero when it has not started.
+func observingSince(ctx context.Context, c client.Client) (time.Time, string, error) {
+	pe := &karv1alpha1.PolicyExemption{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+		return time.Time{}, "", fmt.Errorf("get exemption: %w", err)
+	}
+
+	var since time.Time
+	if pe.Status.ObservingSince != nil {
+		since = pe.Status.ObservingSince.Time
+	}
+
+	return since, pe.Status.ObservedInputs, nil
+}
+
+// waitClock waits up to a minute for the observation clock to start, and returns it with the inputs it started under.
+func waitClock(t *testing.T, c client.Client) (time.Time, string) {
+	t.Helper()
+
+	var (
+		since  time.Time
+		inputs string
+	)
+
+	eventually(t, time.Minute, func() error {
+		var err error
+
+		since, inputs, err = observingSince(t.Context(), c)
+		if err != nil {
+			return err
+		}
+
+		if since.IsZero() {
+			return fmt.Errorf("%w: observingSince unset", errMismatch)
+		}
+
+		return nil
+	})
+
+	return since, inputs
+}
+
+// enforcingIs returns an error unless the Enforcing condition of the exemption has status and reason.
+func enforcingIs(ctx context.Context, c client.Client, status metav1.ConditionStatus, reason string) error {
+	pe := &karv1alpha1.PolicyExemption{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+		return fmt.Errorf("get exemption: %w", err)
+	}
+
+	cond := meta.FindStatusCondition(pe.Status.Conditions, karv1alpha1.ConditionEnforcing)
+	if cond == nil || cond.Status != status || cond.Reason != reason {
+		return fmt.Errorf("%w: Enforcing %+v, want %s %s", errMismatch, cond, status, reason)
+	}
+
+	return nil
+}
+
+func TestAutoSwitchesAfterTTL(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "10s"}))
+	waitClock(t, c)
+
+	eventually(t, time.Minute, func() error {
+		if err := recorded(ctx, c); err != nil {
+			return err
+		}
+
+		return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve)
+	})
+
+	if err := c.Get(ctx, client.ObjectKey{Name: derivedName(sourceName)}, &admissionregv1.ValidatingAdmissionPolicyBinding{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("%s: want NotFound while observing, got %v", derivedName(sourceName), err)
+	}
+
+	eventually(t, time.Minute, func() error {
+		if err := derivedIs(ctx, c, []string{"bad"}); err != nil {
+			return err
+		}
+
+		return enforcingIs(ctx, c, metav1.ConditionTrue, karv1alpha1.ReasonEnforcing)
+	})
+}
+
+func TestAutoRestartKeepsClock(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	stop := startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "15s"}))
+
+	since, _ := waitClock(t, c)
+
+	stop()
+	startController(t, cfg)
+
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	got, _, err := observingSince(ctx, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !got.Equal(since) {
+		t.Fatalf("observingSince %s after restart, want %s", got, since)
+	}
+}
+
+func TestAutoPolicyChangeResetsClock(t *testing.T) {
+	t.Parallel()
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "1h"}))
+
+	since, inputs := waitClock(t, c)
+
+	// The clock is kept to whole seconds, so wait past one before a reset can show.
+	time.Sleep(1100 * time.Millisecond)
+
+	p := &admissionregv1.ValidatingAdmissionPolicy{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, p); err != nil {
+		t.Fatalf("get policy: %v", err)
+	}
+
+	p.Spec.Validations[0].Message = "changed"
+
+	if err := c.Update(ctx, p); err != nil {
+		t.Fatalf("update policy: %v", err)
+	}
+
+	eventually(t, time.Minute, func() error {
+		got, gotInputs, err := observingSince(ctx, c)
+		if err != nil {
+			return err
+		}
+
+		if gotInputs == inputs {
+			return fmt.Errorf("%w: observedInputs still %q", errMismatch, inputs)
+		}
+
+		if !got.After(since) {
+			return fmt.Errorf("%w: observingSince %s, want after %s", errMismatch, got, since)
+		}
+
+		return nil
+	})
+
+	if err := c.Get(ctx, client.ObjectKey{Name: derivedName(sourceName)}, &admissionregv1.ValidatingAdmissionPolicyBinding{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("%s: want NotFound after the reset, got %v", derivedName(sourceName), err)
+	}
+}
+
+func TestAutoLatchSurvivesTTLRaise(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "3s"}))
+
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[ttlAnnotation] = "1h"
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("raise ttl: %v", err)
+	}
+
+	// The raised TTL puts the deadline in the future, so only the latch keeps the binding enforcing.
+	for range 20 {
+		if err := derivedIs(ctx, c, []string{"bad"}); err != nil {
+			t.Fatalf("derived binding lost after the TTL was raised: %v", err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func TestObserveToAutoCountsEarlierTime(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeObserve, ttlAnnotation: "5s"}))
+
+	since, _ := waitClock(t, c)
+
+	// Switch once the observation window is over. The clock started in observe must carry over.
+	time.Sleep(time.Until(since.Add(6 * time.Second)))
+
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[modeAnnotation] = modeAuto
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("switch to auto: %v", err)
+	}
+
+	eventually(t, 15*time.Second, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	got, _, err := observingSince(ctx, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !got.Equal(since) {
+		t.Fatalf("observingSince %s after the switch, want %s", got, since)
+	}
+}
+
 // statusExpiration returns ns's expiration as the PolicyExemption status records it.
 func statusExpiration(ctx context.Context, c client.Client, ns string) (time.Time, error) {
 	pe := &karv1alpha1.PolicyExemption{}

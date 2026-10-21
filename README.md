@@ -14,7 +14,7 @@
 
 Opt in on a `ValidatingAdmissionPolicyBinding` with annotations:
 
-- `kar.zeman.dev/mode: observe|enforce`
+- `kar.zeman.dev/mode: observe|enforce|auto`
 - `kar.zeman.dev/ttl`: a Go duration (default `192h`, 8 days)
 
 `kar` supports **Kubernetes 1.36 and 1.37**. A Kubernetes minor version stays
@@ -36,13 +36,15 @@ gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.1.0 --owner zemanlx
 
 The ClusterRole grants get/list/watch on every resource, Secrets included, because the audit reads whatever a policy matches. To grant less, set `rbac.rules`, or set `rbac.create: false` and bind a ClusterRole you already have. See [Configuration](#configuration).
 
-Helm installs `charts/kar/crds/` on first install only. It never upgrades or deletes CRDs, so on upgrade apply the new chart's CRDs first: `helm pull oci://ghcr.io/zemanlx/charts/kar --version <version> --untar` and `kubectl apply -f kar/crds/`.
+Helm installs `charts/kar/crds/` on first install only. It never upgrades or deletes CRDs, so on upgrade apply the new chart's CRDs first: `helm pull oci://ghcr.io/zemanlx/charts/kar --version <version> --untar` and `kubectl apply -f kar/crds/`. `auto` needs the new CRD, which adds `observingSince`. Without it, kar reports `Synced=False` with reason `CRDOutdated`.
 
 ## Quick start
 
-After Install, apply a policy and a binding with `kar.zeman.dev/mode: observe`. The example leaves out `kar.zeman.dev/ttl`, so the chart's default (`192h`) applies. A missing, invalid or non-positive TTL falls back to that default; set the annotation only when you want a different duration.
+After Install, apply a policy and a binding with `kar.zeman.dev/mode: auto` once. kar records violating namespaces for one TTL, then enforces on its own.
 
-Leave it in `observe` for one TTL, then switch to `enforce`. While observing, kar records every namespace that stores a violator and writes no Deny binding, so creates still succeed. A violating create that happens only after `enforce` is denied and never stored, so that namespace is never added to the exemption list. One full TTL gives periodic workloads a chance to run and be recorded first.
+The example leaves out `kar.zeman.dev/ttl`, so the chart's default (`192h`) applies. A missing, invalid or non-positive TTL falls back to that default; set the annotation only when you want a different duration.
+
+While observing, kar records every namespace that stores a violator and writes no Deny binding, so creates still succeed. A violating create that happens only after kar enforces is denied and never stored, so that namespace is never added to the exemption list. One full TTL gives periodic workloads a chance to run and be recorded first.
 
 ```yaml
 apiVersion: admissionregistration.k8s.io/v1
@@ -66,13 +68,13 @@ kind: ValidatingAdmissionPolicyBinding
 metadata:
   name: require-owner
   annotations:
-    kar.zeman.dev/mode: observe
+    kar.zeman.dev/mode: auto
 spec:
   policyName: require-owner
   validationActions: [Warn]
 ```
 
-kar writes a `PolicyExemption` named after the source binding. In `observe` the `Enforcing` column stays False, because there is no Deny binding yet:
+kar writes a `PolicyExemption` named after the source binding. While observing, the `Enforcing` column stays False, because there is no Deny binding yet:
 
 ```bash
 kubectl get policyexemption require-owner
@@ -91,35 +93,51 @@ kubectl get policyexemption require-owner -o yaml
 
 ```yaml
 status:
-  namespaces:
-  - name: legacy-app
-    firstSeen: "2026-10-21T09:00:00Z"
-    expiration: "2026-10-29T09:00:00Z"
   conditions:
-  - type: Auditable
-    status: "True"
+  - lastTransitionTime: "2026-10-21T09:00:00Z"
+    message: the policy can be audited
     reason: Auditable
-  - type: Enforcing
-    status: "False"
-    reason: Observe
-  - type: Synced
     status: "True"
+    type: Auditable
+  - lastTransitionTime: "2026-10-21T09:00:00Z"
+    message: the exemptions match the audit
     reason: Synced
+    status: "True"
+    type: Synced
+  - lastTransitionTime: "2026-10-21T09:00:00Z"
+    message: 'auto: enforcing after 2026-10-29T09:00:00Z'
+    reason: Observe
+    status: "False"
+    type: Enforcing
+  namespaces:
+  - expiration: "2026-10-29T09:00:00Z"
+    firstSeen: "2026-10-21T09:00:00Z"
+    name: legacy-app
+  observedInputs: 1/1
+  observingSince: "2026-10-21T09:00:00Z"
 ```
 
-After one TTL (8 days by default), `kar` should collect all exemptions and you can switch the same binding to `enforce`:
+After the switch, `Enforcing` is `True` with reason `Enforcing` and message `the derived binding exempts the listed namespaces`, and `observingSince` stays as it was.
 
-```bash
-kubectl annotate validatingadmissionpolicybinding require-owner kar.zeman.dev/mode=enforce --overwrite
-```
+`status.observingSince` is when the clock started. `status.observedInputs` holds the policy and source binding generations it started under. The `Enforcing` condition shows the effective mode. While kar waits, its message gives the switch time.
 
-`Enforcing` becomes True, and kar writes a Deny binding named `<source>-enforce`. Its namespace selector excludes the exempt namespaces (`NotIn`):
+kar switches the binding to `enforce` on its own one TTL after `observingSince` (8 days by default). The switch happens within seconds of that deadline. kar never edits the source binding, so the annotation stays `auto` and GitOps tools see no drift.
+
+When the switch happens, `Enforcing` becomes True, and kar writes a Deny binding named `<source>-enforce`. Its namespace selector excludes the exempt namespaces (`NotIn`):
 
 ```bash
 kubectl get validatingadmissionpolicybinding require-owner-enforce -o yaml
 ```
 
 Fix the violators and let the exemptions expire. See [How it works](#how-it-works) for the full lifecycle and [What kar can audit](#what-kar-can-audit) for policies kar cannot evaluate.
+
+### Manual mode
+
+Use `observe` or `enforce` to choose the switch time yourself. Observe for at least one TTL, then switch the same binding to `enforce`:
+
+```bash
+kubectl annotate validatingadmissionpolicybinding require-owner kar.zeman.dev/mode=enforce --overwrite
+```
 
 ## How it works
 
@@ -130,14 +148,19 @@ flowchart LR
   objs["Matched objects<br/>(one informer per resource)"] --> kar
   ns[Namespaces] --> kar
   kar --> pe["PolicyExemption<br/>status: exempt namespaces"]
-  kar -->|enforce only| der["source-enforce<br/>Deny binding, NotIn exempt"]
+  kar -->|enforce or auto after the TTL| der["source-enforce<br/>Deny binding, NotIn exempt"]
 ```
 
 1. **Opt in.** You annotate a `ValidatingAdmissionPolicyBinding` (the source binding) with `kar.zeman.dev/mode`. kar compiles its policy with Deny semantics using [kat](https://github.com/zemanlx/kat)'s evaluator, the API server's own admission code.
 2. **Audit.** kar runs one informer per resource the policy matches. Each object is evaluated once, as its watch event arrives, as if it were being created. kar keeps only a small stub per object (name, namespace, resourceVersion and, for violators, the denying binding and message), and an index of violators per binding and namespace.
 3. **Exempt.** A namespace with at least one violator is exempt. kar records it in a `PolicyExemption` named after the source binding, with when it was first seen and when the exemption expires.
 4. **Enforce.** In `enforce` mode kar also writes a Deny binding named `<source>-enforce` (a name too long for that is shortened with a hash suffix): the same policy and match as the source binding, plus a `kubernetes.io/metadata.name NotIn [exempt namespaces]` namespace selector. New violations are denied everywhere except the exempt namespaces, where the source binding's own actions (for example `Warn`) still apply. In `observe` mode kar writes no Deny binding.
-5. **Expire.** The TTL slides: a namespace stays exempt until one TTL after kar last saw a violator in it. Once a minute kar refreshes the exemptions of namespaces that still have violators, from the in-memory index, and drops namespaces that have expired or been deleted. Then it updates the status and the Deny binding.
+5. **Auto.** `auto` observes until `status.observingSince` plus the TTL, then writes the Deny binding from step 4.
+   - The clock starts on the first pass where the policy is auditable and the watched resources have synced. kar downtime after that still counts.
+   - Before the switch, a spec change to the policy or the source binding restarts the clock, since what the policy denies may have changed. So does deleting the `PolicyExemption`. Editing the `mode` or `ttl` annotation does not, but a new TTL moves the deadline.
+   - After the switch, `auto` stays enforcing: a later TTL or policy change does not turn it off.
+   - `observe` keeps the clock too, so switching `observe` to `auto` counts the time already observed. `enforce` clears it.
+6. **Expire.** The TTL slides: a namespace stays exempt until one TTL after kar last saw a violator in it. Once a minute kar refreshes the exemptions of namespaces that still have violators, from the in-memory index, and drops namespaces that have expired or been deleted. Then it updates the status and the Deny binding.
 
 What makes kar re-evaluate:
 
@@ -270,7 +293,7 @@ Also useful for [Sizing](#sizing): `process_resident_memory_bytes` and `go_memst
 | `Auditable` | `Auditable=True` | The policy can be audited |
 | `NotAuditable` | `Auditable=False`, `Enforcing=False` | The policy cannot be audited; see [What kar can audit](#what-kar-can-audit) |
 | `Enforcing` | `Enforcing=True` | The derived Deny binding is in place |
-| `Observe` | `Enforcing=False` | Observe mode; no Deny binding |
+| `Observe` | `Enforcing=False` | Observe mode, or `auto` still waiting for its deadline. No Deny binding |
 | `Synced` | `Synced=True` | Exemptions match the audit |
 | `StateTooLarge` | `Synced=False` | The API server rejected the status as too large; see [Limits](#limits) |
 | `PolicyNotFound` | `Synced=False` | The binding's policy is missing |
@@ -278,6 +301,7 @@ Also useful for [Sizing](#sizing): `process_resident_memory_bytes` and `go_memst
 | `DiscoveryFailed` | `Synced=False` | API discovery failed |
 | `InformerFailed` | `Synced=False` | An informer could not be started or restarted |
 | `ReadFailed` | `Synced=False` | Reading cluster state failed |
+| `CRDOutdated` | `Synced=False` | The CRD predates `observingSince` and drops it, so `auto` does not switch until the chart's CRDs are applied |
 | `ApplyFailed` | `Enforcing=False` | Writing the Deny binding failed |
 
 Logs are JSON on stderr.

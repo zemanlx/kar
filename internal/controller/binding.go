@@ -19,6 +19,7 @@ const (
 	ttlAnnotation  = "kar.zeman.dev/ttl"
 	modeObserve    = "observe"
 	modeEnforce    = "enforce"
+	modeAuto       = "auto"
 )
 
 // derivedName returns the name of source's derived binding. A name too long for that is shortened and
