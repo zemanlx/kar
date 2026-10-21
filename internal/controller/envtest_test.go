@@ -51,6 +51,7 @@ var (
 	errMismatch       = errors.New("unexpected state")
 	errStillDerived   = errors.New("derived binding not removed")
 	errNotEstablished = errors.New("CRD not established")
+	errStillPresent   = errors.New("policy still present")
 )
 
 func newScheme() *runtime.Scheme {
@@ -664,6 +665,62 @@ func TestAutoPolicyChangeResetsClock(t *testing.T) {
 	}
 }
 
+func TestAutoPolicyRecreateResetsClock(t *testing.T) {
+	t.Parallel()
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "1h"}))
+
+	since, inputs := waitClock(t, c)
+
+	// The clock is kept to whole seconds, so wait past one before a reset can show.
+	time.Sleep(1100 * time.Millisecond)
+
+	policy := &admissionregv1.ValidatingAdmissionPolicy{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, policy); err != nil {
+		t.Fatalf("get policy: %v", err)
+	}
+
+	if err := c.Delete(ctx, policy); err != nil {
+		t.Fatalf("delete policy: %v", err)
+	}
+
+	eventually(t, time.Minute, func() error {
+		err := c.Get(ctx, client.ObjectKey{Name: sourceName}, &admissionregv1.ValidatingAdmissionPolicy{})
+		if err == nil {
+			return errStillPresent
+		}
+
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("get policy: %w", err)
+		}
+
+		return nil
+	})
+
+	// A recreated policy starts at generation 1 again, so only its UID tells it from the one the clock started under.
+	createAll(t, c, []client.Object{&admissionregv1.ValidatingAdmissionPolicy{Name: sourceName, Spec: policy.Spec}})
+
+	eventually(t, time.Minute, func() error {
+		got, gotInputs, err := observingSince(ctx, c)
+		if err != nil {
+			return err
+		}
+
+		if gotInputs == inputs {
+			return fmt.Errorf("%w: observedInputs still %q", errMismatch, inputs)
+		}
+
+		if !got.After(since) {
+			return fmt.Errorf("%w: observingSince %s, want after %s", errMismatch, got, since)
+		}
+
+		return nil
+	})
+}
+
 func TestAutoLatchSurvivesTTLRaise(t *testing.T) {
 	t.Parallel()
 
@@ -736,6 +793,103 @@ func TestObserveToAutoCountsEarlierTime(t *testing.T) {
 
 	if !got.Equal(since) {
 		t.Fatalf("observingSince %s after the switch, want %s", got, since)
+	}
+}
+
+// dropClockFields removes status.observingSince and status.observedInputs from the PolicyExemption CRD's schema,
+// as the CRD of an outdated chart has them.
+func dropClockFields(t *testing.T, c client.Client) {
+	t.Helper()
+
+	ctx := t.Context()
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+
+	if err := c.Get(ctx, client.ObjectKey{Name: "policyexemptions.kar.zeman.dev"}, crd); err != nil {
+		t.Fatalf("get CRD: %v", err)
+	}
+
+	props := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["status"].Properties
+	delete(props, "observingSince")
+	delete(props, "observedInputs")
+
+	if err := c.Update(ctx, crd); err != nil {
+		t.Fatalf("drop the clock from the CRD: %v", err)
+	}
+}
+
+// waitPruned waits until the server prunes status.observingSince from a PolicyExemption. The schema change
+// applies asynchronously, so it probes with a throwaway object.
+func waitPruned(t *testing.T, c client.Client) {
+	t.Helper()
+
+	ctx := t.Context()
+	key := client.ObjectKey{Name: "probe"}
+	createAll(t, c, []client.Object{&karv1alpha1.PolicyExemption{Name: key.Name}})
+
+	eventually(t, time.Minute, func() error {
+		cur := &karv1alpha1.PolicyExemption{}
+		if err := c.Get(ctx, key, cur); err != nil {
+			return fmt.Errorf("get probe: %w", err)
+		}
+
+		cur.Status.ObservingSince = new(metav1.Now())
+		if err := c.Status().Update(ctx, cur); err != nil {
+			return fmt.Errorf("write probe status: %w", err)
+		}
+
+		back := &karv1alpha1.PolicyExemption{}
+		if err := c.Get(ctx, key, back); err != nil {
+			return fmt.Errorf("read back probe: %w", err)
+		}
+
+		if back.Status.ObservingSince != nil {
+			return fmt.Errorf("%w: observingSince not pruned", errMismatch)
+		}
+
+		return nil
+	})
+
+	if err := c.Delete(ctx, &karv1alpha1.PolicyExemption{Name: key.Name}); err != nil {
+		t.Fatalf("delete probe: %v", err)
+	}
+}
+
+// TestAutoOutdatedCRD serves the PolicyExemption CRD without status.observingSince, as an outdated chart does.
+// The server drops the clock on every write, so kar must report why auto never switches.
+func TestAutoOutdatedCRD(t *testing.T) {
+	t.Parallel()
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+
+	dropClockFields(t, c)
+	waitPruned(t, c)
+
+	startController(t, cfg)
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "2s"}))
+
+	eventually(t, time.Minute, func() error {
+		pe := &karv1alpha1.PolicyExemption{}
+		if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+			return fmt.Errorf("get exemption: %w", err)
+		}
+
+		cond := meta.FindStatusCondition(pe.Status.Conditions, karv1alpha1.ConditionSynced)
+		if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != karv1alpha1.ReasonCRDOutdated {
+			return fmt.Errorf("%w: Synced %+v, want False %s", errMismatch, cond, karv1alpha1.ReasonCRDOutdated)
+		}
+
+		return nil
+	})
+
+	// The TTL passes more than twice over, but the clock is never kept, so auto must not switch.
+	for range 10 {
+		if err := c.Get(ctx, client.ObjectKey{Name: derivedName(sourceName)}, &admissionregv1.ValidatingAdmissionPolicyBinding{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("%s: want NotFound while the CRD is outdated, got %v", derivedName(sourceName), err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 

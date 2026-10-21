@@ -246,3 +246,57 @@ func TestEffectiveMode(t *testing.T) {
 		})
 	}
 }
+
+func TestPassClock(t *testing.T) {
+	t.Parallel()
+
+	t0 := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	now := t0.Add(time.Hour)
+
+	tests := []struct {
+		name       string
+		mode       string
+		since      time.Time // the window start before the pass; zero when not started
+		inputs     string    // the inputs the window started under
+		newInputs  string    // the inputs of this pass
+		latched    bool
+		pending    bool
+		wantSince  time.Time // zero when the window is cleared
+		wantInputs string
+	}{
+		{name: "enforce clears", mode: modeEnforce, since: t0, inputs: "a", newInputs: "a"},
+		{name: "auto latched keeps", mode: modeAuto, latched: true, since: t0, inputs: "a", newInputs: "b", wantSince: t0, wantInputs: "a"},
+		{name: "pending keeps with changed inputs", mode: modeAuto, pending: true, since: t0, inputs: "a", newInputs: "b", wantSince: t0, wantInputs: "a"},
+		{name: "pending keeps an unstarted window", mode: modeAuto, pending: true, newInputs: "b"},
+		{name: "nil clock sets since and inputs", mode: modeAuto, newInputs: "b", wantSince: now, wantInputs: "b"},
+		{name: "changed inputs reset", mode: modeAuto, since: t0, inputs: "a", newInputs: "b", wantSince: now, wantInputs: "b"},
+		{name: "same inputs keep", mode: modeAuto, since: t0, inputs: "a", newInputs: "a", wantSince: t0, wantInputs: "a"},
+		{name: "observe with changed inputs resets", mode: modeObserve, since: t0, inputs: "a", newInputs: "b", wantSince: now, wantInputs: "b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := &pass{
+				source: &admissionregv1.ValidatingAdmissionPolicyBinding{Annotations: map[string]string{modeAnnotation: tt.mode}},
+				pe:     &karv1alpha1.PolicyExemption{},
+			}
+			if !tt.since.IsZero() {
+				p.pe.Status.ObservingSince = new(metav1.NewTime(tt.since))
+			}
+
+			p.pe.Status.ObservedInputs = tt.inputs
+			p.clock(tt.newInputs, tt.latched, tt.pending, now)
+
+			var gotSince time.Time
+			if p.pe.Status.ObservingSince != nil {
+				gotSince = p.pe.Status.ObservingSince.Time
+			}
+
+			if !gotSince.Equal(tt.wantSince) || p.pe.Status.ObservedInputs != tt.wantInputs {
+				t.Errorf("clock() = (%s, %q), want (%s, %q)", gotSince, p.pe.Status.ObservedInputs, tt.wantSince, tt.wantInputs)
+			}
+		})
+	}
+}

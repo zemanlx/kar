@@ -130,7 +130,7 @@ spec:
                 - name
                 x-kubernetes-list-type: map
               observedInputs:
-                description: ObservedInputs is "policyGeneration/bindingGeneration"
+                description: ObservedInputs is "policyUID/policyGeneration/bindingGeneration"
                   when the observation window started.
                 type: string
               observingSince:

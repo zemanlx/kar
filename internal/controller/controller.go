@@ -83,7 +83,7 @@ type auditor struct {
 	compiled *evaluator.CompiledValidating
 	watched  []watched
 	ttl      time.Duration
-	inputs   string // the generations of policy and source, see Reconciler.fingerprint
+	inputs   string // the policy's UID and generation and the source's generation, see Reconciler.fingerprint
 	state    exemptions
 
 	seenMu  sync.Mutex
@@ -333,7 +333,7 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 	p.r.mu.Unlock()
 
 	now := time.Now()
-	inputs := fmt.Sprintf("%d/%d", c.policy.Generation, p.source.Generation)
+	inputs := fmt.Sprintf("%s/%d/%d", c.policy.UID, c.policy.Generation, p.source.Generation)
 
 	a.mu.Lock()
 	a.source, a.policy, a.compiled, a.watched, a.ttl = p.source, c.policy, c.compiled, c.watched, ttlOf(p.source, p.r.DefaultTTL)
@@ -371,12 +371,14 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 
 	recordPass(p.source.Name, counts, len(a.state))
 
-	latched, err := p.clock(ctx, inputs, now)
+	latched, err := p.latched(ctx)
 	if err != nil {
 		return ctrl.Result{}, p.fail(ctx, karv1alpha1.ReasonReadFailed, err)
 	}
 
-	res, err := p.writeAndBind(ctx, a, latched, now)
+	p.clock(inputs, latched, pending, now)
+
+	res, err := p.writeAndBind(ctx, a, latched, pending, now)
 
 	if pending && res.RequeueAfter > syncPoll {
 		res.RequeueAfter = syncPoll // pick up the swap soon
@@ -387,7 +389,7 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 
 // writeAndBind writes the status, then binds the mode the binding is in now. An auto binding still observing
 // wakes at its deadline, so it does not wait for the next resync.
-func (p *pass) writeAndBind(ctx context.Context, a *auditor, latched bool, now time.Time) (ctrl.Result, error) {
+func (p *pass) writeAndBind(ctx context.Context, a *auditor, latched, pending bool, now time.Time) (ctrl.Result, error) {
 	stored, err := p.writeState(ctx, a)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -398,8 +400,14 @@ func (p *pass) writeAndBind(ctx context.Context, a *auditor, latched bool, now t
 		since = p.pe.Status.ObservingSince.Time
 	}
 
+	// While a replacement informer is pending, the active one audits the old inputs, so only the latch can enforce.
+	clockSince := since
+	if pending {
+		clockSince = time.Time{}
+	}
+
 	deadline := since.Add(a.ttl)
-	eff := effectiveMode(mode(p.source), since, a.ttl, latched, now)
+	eff := effectiveMode(mode(p.source), clockSince, a.ttl, latched, now)
 
 	res := ctrl.Result{RequeueAfter: resync}
 	if stored {
@@ -407,34 +415,37 @@ func (p *pass) writeAndBind(ctx context.Context, a *auditor, latched bool, now t
 	}
 
 	// A zero RequeueAfter means no requeue, so the wait is at least a second.
-	if mode(p.source) == modeAuto && eff == modeObserve && !since.IsZero() {
+	if mode(p.source) == modeAuto && eff == modeObserve && !clockSince.IsZero() {
 		res.RequeueAfter = min(res.RequeueAfter, max(time.Until(deadline), time.Second))
 	}
 
 	return res, err
 }
 
-// clock keeps the observation window of a binding and returns whether kar has enforced it. The window restarts
-// when the inputs change and is cleared under enforce. A latched auto binding enforces regardless, so it keeps
-// the window as it is.
-func (p *pass) clock(ctx context.Context, inputs string, now time.Time) (bool, error) {
+// latched reports whether kar has enforced p's binding.
+func (p *pass) latched(ctx context.Context) (bool, error) {
 	derived, err := p.r.derived(ctx, p.source.Name)
 	if err != nil {
 		return false, err
 	}
 
-	latched := owned(derived, p.source.Name)
+	return owned(derived, p.source.Name), nil
+}
+
+// clock keeps the observation window of a binding. The window restarts when the inputs change and is cleared
+// under enforce. A latched auto binding enforces regardless, so it keeps the window as it is. While a replacement
+// informer is pending, the active one audits the old inputs, so the window is kept too.
+func (p *pass) clock(inputs string, latched, pending bool, now time.Time) {
 	st := &p.pe.Status
 
 	switch m := mode(p.source); {
 	case m == modeEnforce:
 		st.ObservingSince, st.ObservedInputs = nil, ""
 	case m == modeAuto && latched:
+	case pending:
 	case st.ObservingSince == nil || st.ObservedInputs != inputs:
 		st.ObservingSince, st.ObservedInputs = new(metav1.NewTime(now)), inputs
 	}
-
-	return latched, nil
 }
 
 // loadState recovers a's exemptions after a restart, from the status and the derived binding.
@@ -511,6 +522,8 @@ func (p *pass) bindAndReport(ctx context.Context, exempt []string, eff string, d
 	switch {
 	case eff == modeEnforce:
 		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionTrue, karv1alpha1.ReasonEnforcing, "the derived binding exempts the listed namespaces")
+	case mode(p.source) == modeAuto && p.pe.Status.ObservingSince == nil:
+		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "auto: the observation window has not started")
 	case mode(p.source) == modeAuto:
 		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "auto: enforcing after "+deadline.UTC().Format(time.RFC3339))
 	default:
