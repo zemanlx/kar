@@ -8,8 +8,11 @@ import (
 
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
+
+const testPolicyUID = types.UID("pol-uid")
 
 func sourceWith(exprs []metav1.LabelSelectorRequirement) *admissionregv1.ValidatingAdmissionPolicyBinding {
 	b := &admissionregv1.ValidatingAdmissionPolicyBinding{
@@ -38,7 +41,8 @@ func checkDerived(t *testing.T, source, derived *admissionregv1.ValidatingAdmiss
 		t.Errorf("TypeMeta = %+v", derived.TypeMeta)
 	}
 
-	if derived.Name != "src-enforce" || len(derived.Labels) != 0 || len(derived.Annotations) != 0 {
+	if derived.Name != "src-enforce" || len(derived.Labels) != 0 ||
+		!reflect.DeepEqual(derived.Annotations, map[string]string{policyUIDAnnotation: string(testPolicyUID)}) {
 		t.Errorf("name %q labels %v annotations %v", derived.Name, derived.Labels, derived.Annotations)
 	}
 
@@ -94,7 +98,7 @@ func TestDerive(t *testing.T) {
 			source := sourceWith(tt.src)
 			before := source.DeepCopy()
 
-			derived := derive(source, tt.exempt)
+			derived := derive(source, testPolicyUID, tt.exempt)
 			checkDerived(t, source, derived)
 
 			if !reflect.DeepEqual(source, before) {

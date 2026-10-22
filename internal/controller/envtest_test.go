@@ -873,6 +873,73 @@ func TestAutoBindingRecreatedObservesAgain(t *testing.T) {
 	})
 }
 
+// TestAutoInterruptedResetDoesNotLatch saves the reset clock of a recreated policy, then stops before the pass
+// removes the Deny binding the old policy left. The Deny binding must not count as latched.
+func TestAutoInterruptedResetDoesNotLatch(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	stop := startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "3s"}))
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	stop()
+
+	// The window that restarts below must stay open, so the binding cannot switch again during the test.
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[ttlAnnotation] = "1h"
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("raise ttl: %v", err)
+	}
+
+	policy := deletePolicy(t, c)
+	createAll(t, c, []client.Object{&admissionregv1.ValidatingAdmissionPolicy{Name: sourceName, Spec: policy.Spec}})
+
+	// Save the reset clock as a pass does, then stop before it removes the old Deny binding.
+	fresh := &admissionregv1.ValidatingAdmissionPolicy{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, fresh); err != nil {
+		t.Fatalf("get recreated policy: %v", err)
+	}
+
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	pe := &karv1alpha1.PolicyExemption{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+		t.Fatalf("get exemption: %v", err)
+	}
+
+	pe.Status.ObservingSince = new(metav1.Now())
+	pe.Status.ObservedInputs = fmt.Sprintf("%s/%d/%s/%d", fresh.UID, fresh.Generation, b.UID, b.Generation)
+
+	if err := c.Status().Update(ctx, pe); err != nil {
+		t.Fatalf("save reset clock: %v", err)
+	}
+
+	startController(t, cfg)
+
+	eventually(t, time.Minute, func() error {
+		if err := derivedGone(ctx, c); err != nil {
+			return err
+		}
+
+		return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve)
+	})
+}
+
 func TestAutoLatchSurvivesTTLRaise(t *testing.T) {
 	t.Parallel()
 
@@ -1043,6 +1110,36 @@ func TestAutoOutdatedCRD(t *testing.T) {
 
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+// TestObserveRemovesDenyBindingWithOutdatedCRD switches an enforcing binding to observe while the CRD drops the clock.
+// The outdated CRD stops the pass before it binds, so observe must remove the Deny binding without that pass.
+func TestObserveRemovesDenyBindingWithOutdatedCRD(t *testing.T) {
+	t.Parallel()
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeEnforce}))
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	dropClockFields(t, c)
+	waitPruned(t, c)
+
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[modeAnnotation] = modeObserve
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("switch to observe: %v", err)
+	}
+
+	eventually(t, time.Minute, func() error { return derivedGone(ctx, c) })
 }
 
 // statusExpiration returns ns's expiration as the PolicyExemption status records it.

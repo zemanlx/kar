@@ -133,6 +133,8 @@ kubectl get validatingadmissionpolicybinding require-owner-enforce -o yaml
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
 metadata:
+  annotations:
+    kar.zeman.dev/policy-uid: 5f0b1c2e-8c1a-4a44-9d3e-2b7f6f1a9c10
   name: require-owner-enforce
   ownerReferences:
   - apiVersion: admissionregistration.k8s.io/v1
@@ -156,7 +158,7 @@ spec:
   - Deny
 ```
 
-It copies the source binding's spec, with `validationActions` set to `Deny` and the exempt namespaces appended as a `NotIn` expression. kar carries over no annotations, so the Deny binding is never opted in itself. The source binding still applies as written: here it keeps warning in `legacy-app`.
+It copies the source binding's spec, with `validationActions` set to `Deny` and the exempt namespaces appended as a `NotIn` expression. kar copies none of the source's annotations, so the Deny binding is never opted in itself; `kar.zeman.dev/policy-uid` records the policy it was written for, so a recreated policy is observed again in `auto`. The source binding still applies as written: here it keeps warning in `legacy-app`.
 
 Fix the violators and let the exemptions expire. See [How it works](#how-it-works) for the full lifecycle and [What kar can audit](#what-kar-can-audit) for policies kar cannot evaluate.
 
@@ -201,7 +203,7 @@ What makes kar re-evaluate:
 
 Ownership and failure handling:
 
-- The `PolicyExemption` and the Deny binding are owned by the source binding. Removing the mode annotation makes kar delete them, and deleting the source binding lets the garbage collector delete them even when kar is down.
+- The `PolicyExemption` and the Deny binding are owned by the source binding. Removing the mode annotation makes kar delete them, and deleting the source binding lets the garbage collector delete them even when kar is down. Switching to `observe` makes kar delete the Deny binding at once, even while the audit is still syncing.
 - Deleting the policy makes kar remove the Deny binding and keep the `PolicyExemption`, so its exemptions survive. A policy recreated under the same name starts a fresh `auto` window, also when it was recreated while kar was down.
 - A policy kar cannot audit gets `Auditable=False` and no Deny binding. See [What kar can audit](#what-kar-can-audit).
 - The `PolicyExemption` status is kar's durable state. A new leader recovers the exemptions from it and from the Deny binding, then refreshes them on its first pass.

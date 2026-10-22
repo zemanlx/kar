@@ -126,7 +126,7 @@ func TestRecoverState(t *testing.T) {
 	env := metav1.LabelSelectorRequirement{Key: "env", Operator: metav1.LabelSelectorOpIn, Values: []string{"prod"}}
 	source := sourceWith([]metav1.LabelSelectorRequirement{human})
 	derivedWith := func(exempt ...string) *admissionregv1.ValidatingAdmissionPolicyBinding {
-		return derive(source, exempt)
+		return derive(source, testPolicyUID, exempt)
 	}
 
 	kept := karv1alpha1.ExemptNamespace{Name: "a", FirstSeen: metav1.NewTime(t0), Expiration: metav1.NewTime(t0.Add(testTTL))}

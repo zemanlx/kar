@@ -11,15 +11,18 @@ import (
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
 	modeAnnotation = "kar.zeman.dev/mode"
 	ttlAnnotation  = "kar.zeman.dev/ttl"
-	modeObserve    = "observe"
-	modeEnforce    = "enforce"
-	modeAuto       = "auto"
+	// policyUIDAnnotation is set on a derived binding to the UID of the policy it was written under.
+	policyUIDAnnotation = "kar.zeman.dev/policy-uid"
+	modeObserve         = "observe"
+	modeEnforce         = "enforce"
+	modeAuto            = "auto"
 )
 
 // derivedName returns the name of source's derived binding. A name too long for that is shortened and
@@ -51,13 +54,14 @@ func ttlOf(b *admissionregv1.ValidatingAdmissionPolicyBinding, def time.Duration
 	return d
 }
 
-// derive returns the Deny binding for source that exempts the namespaces in exempt. It never
-// mutates source and copies no annotations, so the derived binding is not itself opted in.
-func derive(source *admissionregv1.ValidatingAdmissionPolicyBinding, exempt []string) *admissionregv1.ValidatingAdmissionPolicyBinding {
+// derive returns the Deny binding for source that exempts the namespaces in exempt, written under the policy
+// with UID uid. It never mutates source and copies no annotations, so the derived binding is not itself opted in.
+func derive(source *admissionregv1.ValidatingAdmissionPolicyBinding, uid types.UID, exempt []string) *admissionregv1.ValidatingAdmissionPolicyBinding {
 	out := &admissionregv1.ValidatingAdmissionPolicyBinding{
 		APIVersion:      admissionregv1.SchemeGroupVersion.String(),
 		Kind:            "ValidatingAdmissionPolicyBinding",
 		Name:            derivedName(source.Name),
+		Annotations:     map[string]string{policyUIDAnnotation: string(uid)},
 		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(source, admissionregv1.SchemeGroupVersion.WithKind("ValidatingAdmissionPolicyBinding"))},
 		Spec:            denySemantics(source).Spec,
 	}
