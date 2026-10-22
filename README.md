@@ -277,7 +277,7 @@ Binary flags (the chart sets `--leader-elect` and `--default-ttl`):
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--default-ttl` | `192h` | Exemption TTL when a binding sets no `kar.zeman.dev/ttl` |
+| `--default-ttl` | `192h` | Exemption TTL when a binding sets no `kar.zeman.dev/ttl`. Must be positive (kar exits otherwise) |
 | `--metrics-bind-address` | `:8080` | Prometheus metrics listen address |
 | `--health-probe-bind-address` | `:8081` | Health and readiness probe listen address |
 | `--leader-elect` | `false` | Only one replica reconciles; the chart always enables this |
