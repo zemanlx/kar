@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1140,6 +1141,67 @@ func TestObserveRemovesDenyBindingWithOutdatedCRD(t *testing.T) {
 	}
 
 	eventually(t, time.Minute, func() error { return derivedGone(ctx, c) })
+	eventually(t, time.Minute, func() error { return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve) })
+}
+
+// TestOutdatedCRDStatusSettles checks that an outdated CRD costs no status write per pass once reported.
+func TestOutdatedCRDStatusSettles(t *testing.T) {
+	t.Parallel()
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+
+	dropClockFields(t, c)
+	waitPruned(t, c)
+
+	startController(t, cfg)
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto}))
+
+	pe := &karv1alpha1.PolicyExemption{}
+
+	eventually(t, time.Minute, func() error {
+		if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+			return fmt.Errorf("get exemption: %w", err)
+		}
+
+		cond := meta.FindStatusCondition(pe.Status.Conditions, karv1alpha1.ConditionSynced)
+		if cond == nil || cond.Reason != karv1alpha1.ReasonCRDOutdated {
+			return fmt.Errorf("%w: Synced %+v, want %s", errMismatch, cond, karv1alpha1.ReasonCRDOutdated)
+		}
+
+		return nil
+	})
+
+	time.Sleep(2 * time.Second)
+
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+		t.Fatalf("get exemption: %v", err)
+	}
+
+	// Each annotation change runs a pass.
+	for i := range 3 {
+		b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+		if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+			t.Fatalf("get binding: %v", err)
+		}
+
+		b.Annotations["poke"] = strconv.Itoa(i)
+		if err := c.Update(ctx, b); err != nil {
+			t.Fatalf("poke binding: %v", err)
+		}
+
+		time.Sleep(time.Second)
+	}
+
+	after := &karv1alpha1.PolicyExemption{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, after); err != nil {
+		t.Fatalf("get exemption: %v", err)
+	}
+
+	if after.ResourceVersion != pe.ResourceVersion {
+		t.Fatalf("status rewritten on every pass: resourceVersion %s, then %s", pe.ResourceVersion, after.ResourceVersion)
+	}
 }
 
 // statusExpiration returns ns's expiration as the PolicyExemption status records it.

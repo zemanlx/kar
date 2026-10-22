@@ -259,6 +259,8 @@ func (r *Reconciler) sync(ctx context.Context, source *admissionregv1.Validating
 
 			return ctrl.Result{}, errors.Join(err, p.save(ctx))
 		}
+
+		setCondition(pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "observe mode: no derived binding")
 	}
 
 	c, res, err := p.check(ctx)
@@ -481,10 +483,10 @@ func (p *pass) writeState(ctx context.Context, a *auditor) (bool, error) {
 		p.pe.Status.Namespaces = toStatus(a.state)
 	}
 
-	setCondition(p.pe, karv1alpha1.ConditionSynced, metav1.ConditionTrue, karv1alpha1.ReasonSynced, "the exemptions match the audit")
-
 	clocked := p.pe.Status.ObservingSince != nil
 
+	// Synced is set after the save, so an outdated CRD that prunes the clock leaves the status as it was and the
+	// API server skips the write.
 	err := p.save(ctx)
 	if err == nil {
 		// An outdated CRD prunes the clock, which would otherwise restart on every pass and never enforce.
@@ -495,7 +497,9 @@ func (p *pass) writeState(ctx context.Context, a *auditor) (bool, error) {
 			return false, p.save(ctx)
 		}
 
-		return true, nil
+		setCondition(p.pe, karv1alpha1.ConditionSynced, metav1.ConditionTrue, karv1alpha1.ReasonSynced, "the exemptions match the audit")
+
+		return true, p.save(ctx)
 	}
 
 	if !tooLarge(err) {
