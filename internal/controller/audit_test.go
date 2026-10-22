@@ -74,6 +74,9 @@ func TestAuditReads(t *testing.T) {
 		{name: "request bound to a name", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "cel.bind(r, request, r.userInfo.username == 'x')"}}}, want: []string{"validations[0].expression reads request"}},
 		{name: "request in a list", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "[request].all(r, r.userInfo.username != 'x')"}}}, want: []string{"validations[0].expression reads request"}},
 		{name: "index on request with a computed key", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "request['user' + 'Info'].username == 'x'"}}}, want: []string{"validations[0].expression reads request"}},
+		{name: "request.options.dryRun in a validation", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "!request.options.dryRun"}}}, want: []string{"validations[0].expression reads request.options"}},
+		{name: "has on request.options.fieldManager", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "has(request.options.fieldManager)"}}}, want: []string{"validations[0].expression reads request.options"}},
+		{name: "index on request.options", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "request['options'].fieldManager == 'kubectl'"}}}, want: []string{"validations[0].expression reads request.options"}},
 	}
 
 	for _, tt := range tests {

@@ -122,8 +122,8 @@ func (r *reads) visit(e ast.Expr) {
 
 	r.selected[operand.ID()] = true
 
-	// The audit's request is fixed: user, operation, and dryRun differ from a real admission.
-	if slices.Contains([]string{"userInfo", "operation", "dryRun"}, name) {
+	// The audit's request is fixed: user, operation, dryRun, and options differ from a real admission.
+	if slices.Contains([]string{"userInfo", "operation", "dryRun", "options"}, name) {
 		r.add("request." + name)
 	}
 }
