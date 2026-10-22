@@ -36,7 +36,7 @@ gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.1.0 --owner zemanlx
 
 The ClusterRole grants get/list/watch on every resource, Secrets included, because the audit reads whatever a policy matches. To grant less, set `rbac.rules`, or set `rbac.create: false` and bind a ClusterRole you already have. See [Configuration](#configuration).
 
-Helm installs `charts/kar/crds/` on first install only. It never upgrades or deletes CRDs, so on upgrade apply the new chart's CRDs first: `helm pull oci://ghcr.io/zemanlx/charts/kar --version <version> --untar` and `kubectl apply -f kar/crds/`. `auto` needs the new CRD, which adds `observingSince`. Without it, kar reports `Synced=False` with reason `CRDOutdated`.
+Helm installs `charts/kar/crds/` on first install only. It never upgrades or deletes CRDs, so on upgrade apply the new chart's CRDs first: `helm pull oci://ghcr.io/zemanlx/charts/kar --version <version> --untar` and `kubectl apply -f kar/crds/`. `auto` needs the new CRD, which adds `observingSince`. Without it, `auto` and `observe` bindings report `Synced=False` with reason `CRDOutdated`, and `auto` never switches.
 
 ## Quick start
 
@@ -190,7 +190,7 @@ flowchart LR
    - The clock starts on the first pass where the policy is auditable and the watched resources have synced. kar downtime after that still counts.
    - Before the switch, a spec change to the policy or the source binding restarts the clock, since what the policy denies may have changed. So does deleting and recreating the policy or the source binding, or deleting the `PolicyExemption`. The restart waits for the replacement informers to sync, so `auto` does not switch on the old audit. Editing the `mode` or `ttl` annotation does not restart the clock, but a new TTL moves the deadline.
    - After the switch, `auto` stays enforcing: a later TTL or policy change does not turn it off.
-   - `observe` keeps the clock too, so switching `observe` to `auto` counts the time already observed. `enforce` clears it.
+   - `observe` keeps the clock too, so switching `observe` to `auto` counts the time already observed. `enforce` clears it, and switching `enforce` to `auto` keeps enforcing, also over a Deny binding written by a kar release without `auto`.
 6. **Expire.** The TTL slides: a namespace stays exempt until one TTL after kar last saw a violator in it. Once a minute kar refreshes the exemptions of namespaces that still have violators, from the in-memory index, and drops namespaces that have expired or been deleted. Then it updates the status and the Deny binding.
 
 What makes kar re-evaluate:

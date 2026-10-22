@@ -976,6 +976,107 @@ func TestAutoLatchSurvivesTTLRaise(t *testing.T) {
 	}
 }
 
+// TestAutoLatchesLegacyDenyBinding switches an enforce binding to auto while kar is down, over a Deny binding
+// written by a kar that did not record the policy UID.
+func TestAutoLatchesLegacyDenyBinding(t *testing.T) {
+	t.Parallel()
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	stop := startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeEnforce}))
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+	stop()
+
+	derived := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: derivedName(sourceName)}, derived); err != nil {
+		t.Fatalf("get derived binding: %v", err)
+	}
+
+	delete(derived.Annotations, policyUIDAnnotation)
+
+	if err := c.Update(ctx, derived); err != nil {
+		t.Fatalf("strip policy uid: %v", err)
+	}
+
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[modeAnnotation] = modeAuto
+	b.Annotations[ttlAnnotation] = "1h"
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("switch to auto: %v", err)
+	}
+
+	startController(t, cfg)
+
+	for range 20 {
+		if err := derivedIs(ctx, c, []string{"bad"}); err != nil {
+			t.Fatalf("derived binding lost on switching to auto: %v", err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if err := enforcingIs(ctx, c, metav1.ConditionTrue, karv1alpha1.ReasonEnforcing); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAutoLegacyDenyBindingOfOldPolicyObserves recreates the policy while kar is down, under a Deny binding
+// without the policy UID that predates it, so auto observes the new policy.
+func TestAutoLegacyDenyBindingOfOldPolicyObserves(t *testing.T) {
+	t.Parallel()
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	stop := startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeEnforce}))
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+	stop()
+
+	derived := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: derivedName(sourceName)}, derived); err != nil {
+		t.Fatalf("get derived binding: %v", err)
+	}
+
+	delete(derived.Annotations, policyUIDAnnotation)
+
+	if err := c.Update(ctx, derived); err != nil {
+		t.Fatalf("strip policy uid: %v", err)
+	}
+
+	// Creation timestamps have a resolution of one second.
+	time.Sleep(time.Second)
+
+	policy := deletePolicy(t, c)
+	createAll(t, c, []client.Object{&admissionregv1.ValidatingAdmissionPolicy{Name: sourceName, Spec: policy.Spec}})
+
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[modeAnnotation] = modeAuto
+	b.Annotations[ttlAnnotation] = "1h"
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("switch to auto: %v", err)
+	}
+
+	startController(t, cfg)
+
+	eventually(t, time.Minute, func() error { return derivedGone(ctx, c) })
+	eventually(t, time.Minute, func() error { return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve) })
+}
+
 func TestObserveToAutoCountsEarlierTime(t *testing.T) {
 	t.Parallel()
 

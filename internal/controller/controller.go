@@ -384,7 +384,7 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 
 	recordPass(p.source.Name, counts, len(a.state))
 
-	latched, err := p.latched(ctx, c.policy.UID)
+	latched, err := p.latched(ctx, c.policy)
 	if err != nil {
 		return ctrl.Result{}, p.fail(ctx, karv1alpha1.ReasonReadFailed, err)
 	}
@@ -429,10 +429,10 @@ func (p *pass) writeAndBind(ctx context.Context, a *auditor, uid types.UID, latc
 	return res, err
 }
 
-// latched reports whether kar has enforced p's binding under the policy with UID uid. A Deny binding left
-// by an earlier policy or source binding of the same name does not count: the garbage collector removes the
-// latter only some time after its owner is gone, and a reset clock can be saved before the former is removed.
-func (p *pass) latched(ctx context.Context, uid types.UID) (bool, error) {
+// latched reports whether kar has enforced p's binding under policy. A Deny binding left by an earlier policy
+// or source binding of the same name does not count: the garbage collector removes the latter only some time
+// after its owner is gone, and a reset clock can be saved before the former is removed.
+func (p *pass) latched(ctx context.Context, policy *admissionregv1.ValidatingAdmissionPolicy) (bool, error) {
 	derived, err := p.r.derived(ctx, p.source.Name)
 	if err != nil {
 		return false, err
@@ -442,7 +442,15 @@ func (p *pass) latched(ctx context.Context, uid types.UID) (bool, error) {
 		return false, nil
 	}
 
-	return derived.Annotations[policyUIDAnnotation] == string(uid), nil
+	uid, ok := derived.Annotations[policyUIDAnnotation]
+	if !ok {
+		// ponytail: a Deny binding from a kar that did not record the policy UID counts when it is not older
+		// than the policy. Ceiling: a policy recreated within a second of it. Upgrade path: drop this once
+		// every supported kar records the UID.
+		return !derived.CreationTimestamp.Before(&policy.CreationTimestamp), nil
+	}
+
+	return uid == string(policy.UID), nil
 }
 
 // clock keeps the observation window of a binding. The window restarts when the inputs change and is cleared
