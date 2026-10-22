@@ -129,6 +129,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              observedInputs:
+                description: ObservedInputs is "policyUID/policyGeneration/bindingUID/bindingGeneration"
+                  when the observation window started.
+                type: string
+              observingSince:
+                description: ObservingSince is when the observation window of an auto
+                  binding started.
+                format: date-time
+                type: string
             type: object
         type: object
     served: true

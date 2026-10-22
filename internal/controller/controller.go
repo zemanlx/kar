@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/util/workqueue"
@@ -83,7 +84,7 @@ type auditor struct {
 	compiled *evaluator.CompiledValidating
 	watched  []watched
 	ttl      time.Duration
-	inputs   string // the generations of policy and source, see Reconciler.fingerprint
+	inputs   string // the UIDs and generations of the policy and the source, see Reconciler.fingerprint
 	state    exemptions
 
 	seenMu  sync.Mutex
@@ -251,6 +252,17 @@ type checked struct {
 func (r *Reconciler) sync(ctx context.Context, source *admissionregv1.ValidatingAdmissionPolicyBinding, pe *karv1alpha1.PolicyExemption) (ctrl.Result, error) {
 	p := &pass{r: r, source: source, pe: pe, saved: pe.DeepCopy()}
 
+	// Observe must not enforce, so it drops the Deny binding before the checks and the informers below can return early.
+	if mode(source) == modeObserve {
+		if err := r.remove(ctx, source.Name); err != nil {
+			setCondition(pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonApplyFailed, err.Error())
+
+			return ctrl.Result{}, errors.Join(err, p.save(ctx))
+		}
+
+		setCondition(pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "observe mode: no derived binding")
+	}
+
 	c, res, err := p.check(ctx)
 	if c == nil {
 		return res, err
@@ -268,11 +280,16 @@ func (p *pass) check(ctx context.Context) (*checked, ctrl.Result, error) {
 			return nil, ctrl.Result{}, fmt.Errorf("get policy: %w", err)
 		}
 
+		msg := fmt.Sprintf("ValidatingAdmissionPolicy %q not found", p.source.Spec.PolicyName)
 		p.r.forget(p.source.Name)
-		setCondition(p.pe, karv1alpha1.ConditionSynced, metav1.ConditionFalse, karv1alpha1.ReasonPolicyNotFound,
-			fmt.Sprintf("ValidatingAdmissionPolicy %q not found", p.source.Spec.PolicyName))
+		setCondition(p.pe, karv1alpha1.ConditionSynced, metav1.ConditionFalse, karv1alpha1.ReasonPolicyNotFound, msg)
+		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonPolicyNotFound, msg)
 
-		return nil, ctrl.Result{RequeueAfter: resync}, p.save(ctx)
+		return nil, ctrl.Result{RequeueAfter: resync}, errors.Join(p.r.remove(ctx, p.source.Name), p.save(ctx))
+	}
+
+	if err := p.dropObsolete(ctx, policy); err != nil {
+		return nil, ctrl.Result{}, p.fail(ctx, karv1alpha1.ReasonApplyFailed, err)
 	}
 
 	compiled, issues, err := p.r.compile(policy, p.source)
@@ -333,10 +350,11 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 	p.r.mu.Unlock()
 
 	now := time.Now()
+	inputs := fmt.Sprintf("%s/%d/%s/%d", c.policy.UID, c.policy.Generation, p.source.UID, p.source.Generation)
 
 	a.mu.Lock()
 	a.source, a.policy, a.compiled, a.watched, a.ttl = p.source, c.policy, c.compiled, c.watched, ttlOf(p.source, p.r.DefaultTTL)
-	a.inputs = fmt.Sprintf("%d/%d", c.policy.Generation, p.source.Generation)
+	a.inputs = inputs
 
 	if a.exempt == nil {
 		if err := p.loadState(ctx, a, now); err != nil {
@@ -349,7 +367,7 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 	a.mu.Unlock()
 
 	// No lock is held while waiting on informers: their transforms take a.mu.
-	active, ready, pending, err := p.r.syncWatches(ctx, c.watched)
+	active, ready, pending, err := p.r.syncWatches(ctx, c.watched, p.source.Name+"="+inputs)
 	if err != nil {
 		return ctrl.Result{}, p.fail(ctx, karv1alpha1.ReasonInformerFailed, err)
 	}
@@ -370,21 +388,110 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 
 	recordPass(p.source.Name, counts, len(a.state))
 
-	stored, err := p.writeState(ctx, a)
+	latched, err := p.latched(ctx, c.policy)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, p.fail(ctx, karv1alpha1.ReasonReadFailed, err)
 	}
 
-	res := ctrl.Result{RequeueAfter: resync}
-	if stored {
-		res, err = p.bindAndReport(ctx, a.state.names())
-	}
+	p.clock(inputs, latched, now)
+
+	res, err := p.writeAndBind(ctx, a, c.policy.UID, latched, now)
 
 	if pending && res.RequeueAfter > syncPoll {
 		res.RequeueAfter = syncPoll // pick up the swap soon
 	}
 
 	return res, err
+}
+
+// writeAndBind writes the status, then binds the mode the binding is in now. An auto binding still observing
+// wakes at its deadline, so it does not wait for the next resync.
+func (p *pass) writeAndBind(ctx context.Context, a *auditor, uid types.UID, latched bool, now time.Time) (ctrl.Result, error) {
+	stored, err := p.writeState(ctx, a)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	var since time.Time
+	if p.pe.Status.ObservingSince != nil {
+		since = p.pe.Status.ObservingSince.Time
+	}
+
+	deadline := since.Add(a.ttl)
+	eff := effectiveMode(mode(p.source), since, a.ttl, latched, now)
+
+	res := ctrl.Result{RequeueAfter: resync}
+	if stored {
+		res, err = p.bindAndReport(ctx, uid, a.state.names(), eff, deadline)
+	}
+
+	// A zero RequeueAfter means no requeue, so the wait is at least a second.
+	if mode(p.source) == modeAuto && eff == modeObserve && !since.IsZero() {
+		res.RequeueAfter = min(res.RequeueAfter, max(time.Until(deadline), time.Second))
+	}
+
+	return res, err
+}
+
+// latched reports whether kar has enforced p's binding under policy. A Deny binding left by an earlier policy
+// or source binding of the same name does not count: the garbage collector removes the latter only some time
+// after its owner is gone, and a reset clock can be saved before the former is removed.
+func (p *pass) latched(ctx context.Context, policy *admissionregv1.ValidatingAdmissionPolicy) (bool, error) {
+	derived, err := p.r.derived(ctx, p.source.Name)
+	if err != nil {
+		return false, err
+	}
+
+	return owned(derived, p.source.Name) && p.current(derived, policy), nil
+}
+
+// dropObsolete removes an auto binding's Deny binding written for an earlier policy or source binding, before
+// the checks and the informers can stop the pass, so the replacement observes.
+func (p *pass) dropObsolete(ctx context.Context, policy *admissionregv1.ValidatingAdmissionPolicy) error {
+	if mode(p.source) != modeAuto {
+		return nil
+	}
+
+	derived, err := p.r.derived(ctx, p.source.Name)
+	if err != nil || !owned(derived, p.source.Name) || p.current(derived, policy) {
+		return err
+	}
+
+	setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "auto: the observation window has not started")
+
+	return p.r.deleteIfExists(ctx, derived)
+}
+
+// current reports whether kar wrote derived, a Deny binding it owns, for p's source binding and policy.
+func (p *pass) current(derived *admissionregv1.ValidatingAdmissionPolicyBinding, policy *admissionregv1.ValidatingAdmissionPolicy) bool {
+	if metav1.GetControllerOf(derived).UID != p.source.UID {
+		return false
+	}
+
+	uid, ok := derived.Annotations[policyUIDAnnotation]
+	if !ok {
+		// ponytail: a Deny binding from a kar that did not record the policy UID counts when it is not older
+		// than the policy. Ceiling: a policy recreated within a second of it. Upgrade path: drop this once
+		// every supported kar records the UID.
+		return !derived.CreationTimestamp.Before(&policy.CreationTimestamp)
+	}
+
+	return uid == string(policy.UID)
+}
+
+// clock keeps the observation window of a binding. The window restarts when the inputs change and is cleared
+// under enforce. A latched auto binding enforces regardless, so it keeps the window as it is.
+func (p *pass) clock(inputs string, latched bool, now time.Time) {
+	st := &p.pe.Status
+
+	switch m := mode(p.source); {
+	case m == modeEnforce:
+		st.ObservingSince, st.ObservedInputs = nil, ""
+	case m == modeAuto && latched:
+	case st.ObservingSince == nil || st.ObservedInputs != inputs:
+		// The status stores whole seconds, so the start rounds up to never precede this pass.
+		st.ObservingSince, st.ObservedInputs = new(metav1.NewTime(now.Add(time.Second-1).Truncate(time.Second))), inputs
+	}
 }
 
 // loadState recovers a's exemptions after a restart, from the status and the derived binding.
@@ -411,11 +518,23 @@ func (p *pass) writeState(ctx context.Context, a *auditor) (bool, error) {
 		p.pe.Status.Namespaces = toStatus(a.state)
 	}
 
-	setCondition(p.pe, karv1alpha1.ConditionSynced, metav1.ConditionTrue, karv1alpha1.ReasonSynced, "the exemptions match the audit")
+	clocked := p.pe.Status.ObservingSince != nil
 
+	// Synced is set after the save, so an outdated CRD that prunes the clock leaves the status as it was and the
+	// API server skips the write.
 	err := p.save(ctx)
 	if err == nil {
-		return true, nil
+		// An outdated CRD prunes the clock, which would otherwise restart on every pass and never enforce.
+		if clocked && p.pe.Status.ObservingSince == nil {
+			setCondition(p.pe, karv1alpha1.ConditionSynced, metav1.ConditionFalse, karv1alpha1.ReasonCRDOutdated,
+				"the PolicyExemption CRD is outdated and drops status.observingSince; apply the chart's CRDs")
+
+			return false, p.save(ctx)
+		}
+
+		setCondition(p.pe, karv1alpha1.ConditionSynced, metav1.ConditionTrue, karv1alpha1.ReasonSynced, "the exemptions match the audit")
+
+		return true, p.save(ctx)
 	}
 
 	if !tooLarge(err) {
@@ -439,17 +558,23 @@ func tooLarge(err error) bool {
 		strings.Contains(err.Error(), "trying to send message larger than max")
 }
 
-// bindAndReport applies or removes the derived binding for the exempt namespaces and records it.
-func (p *pass) bindAndReport(ctx context.Context, exempt []string) (ctrl.Result, error) {
-	if err := p.r.bind(ctx, p.source, exempt); err != nil {
+// bindAndReport applies or removes the derived binding for the exempt namespaces in mode eff and records it.
+// deadline is when an auto binding observing so far starts enforcing.
+func (p *pass) bindAndReport(ctx context.Context, uid types.UID, exempt []string, eff string, deadline time.Time) (ctrl.Result, error) {
+	if err := p.r.bind(ctx, p.source, uid, exempt, eff); err != nil {
 		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonApplyFailed, err.Error())
 
 		return ctrl.Result{}, errors.Join(err, p.save(ctx))
 	}
 
-	if mode(p.source) == modeEnforce {
+	switch {
+	case eff == modeEnforce:
 		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionTrue, karv1alpha1.ReasonEnforcing, "the derived binding exempts the listed namespaces")
-	} else {
+	case mode(p.source) == modeAuto && p.pe.Status.ObservingSince == nil:
+		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "auto: the observation window has not started")
+	case mode(p.source) == modeAuto:
+		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "auto: enforcing after "+deadline.UTC().Format(time.RFC3339))
+	default:
 		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "observe mode: no derived binding")
 	}
 
@@ -688,9 +813,9 @@ func (r *Reconciler) namespaceExists(ctx context.Context, name string) bool {
 	return !apierrors.IsNotFound(r.Client.Get(ctx, client.ObjectKey{Name: name}, &corev1.Namespace{}))
 }
 
-// bind applies the derived binding in enforce mode and removes it otherwise.
-func (r *Reconciler) bind(ctx context.Context, source *admissionregv1.ValidatingAdmissionPolicyBinding, exempt []string) error {
-	if mode(source) != modeEnforce {
+// bind applies the derived binding of the policy with UID uid when eff is enforce and removes it otherwise.
+func (r *Reconciler) bind(ctx context.Context, source *admissionregv1.ValidatingAdmissionPolicyBinding, uid types.UID, exempt []string, eff string) error {
+	if eff != modeEnforce {
 		return r.remove(ctx, source.Name)
 	}
 
@@ -704,7 +829,7 @@ func (r *Reconciler) bind(ctx context.Context, source *admissionregv1.Validating
 	}
 
 	// Always apply: an unchanged apply writes nothing, and comparing with server defaults would not match anyway.
-	return r.apply(ctx, derive(source, exempt))
+	return r.apply(ctx, derive(source, uid, exempt))
 }
 
 // apply server-side applies desired as field manager kar. Kar owns the derived binding, so it takes
@@ -805,7 +930,7 @@ func isSource(obj client.Object) bool {
 func optedIn(b *admissionregv1.ValidatingAdmissionPolicyBinding) bool {
 	m := mode(b)
 
-	return m == modeObserve || m == modeEnforce
+	return m == modeObserve || m == modeEnforce || m == modeAuto
 }
 
 // owned reports whether kar wrote b, the derived binding of source: b's controller is source.

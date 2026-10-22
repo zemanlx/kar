@@ -94,6 +94,10 @@ func (in *PolicyExemptionStatus) DeepCopyInto(out *PolicyExemptionStatus) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.ObservingSince != nil {
+		in, out := &in.ObservingSince, &out.ObservingSince
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

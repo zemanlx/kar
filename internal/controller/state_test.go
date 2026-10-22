@@ -126,7 +126,7 @@ func TestRecoverState(t *testing.T) {
 	env := metav1.LabelSelectorRequirement{Key: "env", Operator: metav1.LabelSelectorOpIn, Values: []string{"prod"}}
 	source := sourceWith([]metav1.LabelSelectorRequirement{human})
 	derivedWith := func(exempt ...string) *admissionregv1.ValidatingAdmissionPolicyBinding {
-		return derive(source, exempt)
+		return derive(source, testPolicyUID, exempt)
 	}
 
 	kept := karv1alpha1.ExemptNamespace{Name: "a", FirstSeen: metav1.NewTime(t0), Expiration: metav1.NewTime(t0.Add(testTTL))}
@@ -207,6 +207,111 @@ func TestToStatusAndNeedsWrite(t *testing.T) {
 			ttl := cmp.Or(tt.ttl, testTTL)
 			if got := needsWrite(tt.persisted, e, ttl); got != tt.want {
 				t.Errorf("needsWrite() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveMode(t *testing.T) {
+	t.Parallel()
+
+	t0 := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	deadline := t0.Add(testTTL)
+
+	tests := []struct {
+		name    string
+		mode    string
+		since   time.Time
+		latched bool
+		now     time.Time
+		want    string
+	}{
+		{name: "observe", mode: modeObserve, since: t0, now: deadline.Add(time.Hour), want: modeObserve},
+		{name: "enforce", mode: modeEnforce, now: t0, want: modeEnforce},
+		{name: "auto with no clock", mode: modeAuto, now: deadline, want: modeObserve},
+		{name: "auto before the deadline", mode: modeAuto, since: t0, now: deadline.Add(-time.Second), want: modeObserve},
+		{name: "auto at the deadline", mode: modeAuto, since: t0, now: deadline, want: modeEnforce},
+		{name: "auto after the deadline", mode: modeAuto, since: t0, now: deadline.Add(time.Hour), want: modeEnforce},
+		{name: "auto latched with no clock", mode: modeAuto, latched: true, now: t0, want: modeEnforce},
+		{name: "auto latched before the deadline", mode: modeAuto, since: t0, latched: true, now: deadline.Add(-time.Second), want: modeEnforce},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := effectiveMode(tt.mode, tt.since, testTTL, tt.latched, tt.now); got != tt.want {
+				t.Errorf("effectiveMode() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPassClockNeverStartsEarly checks that a window started mid-second does not start before its pass once the
+// status stores it at whole seconds.
+func TestPassClockNeverStartsEarly(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 14, 12, 0, 0, 900_000_000, time.UTC)
+	p := &pass{
+		source: &admissionregv1.ValidatingAdmissionPolicyBinding{Annotations: map[string]string{modeAnnotation: modeAuto}},
+		pe:     &karv1alpha1.PolicyExemption{},
+	}
+
+	p.clock("a", false, now)
+
+	stored := p.pe.Status.ObservingSince.Rfc3339Copy().Time
+	if stored.Before(now) {
+		t.Errorf("observingSince stored as %s, before the pass at %s", stored, now)
+	}
+}
+
+func TestPassClock(t *testing.T) {
+	t.Parallel()
+
+	t0 := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	now := t0.Add(time.Hour)
+
+	tests := []struct {
+		name       string
+		mode       string
+		since      time.Time // the window start before the pass; zero when not started
+		inputs     string    // the inputs the window started under
+		newInputs  string    // the inputs of this pass
+		latched    bool
+		wantSince  time.Time // zero when the window is cleared
+		wantInputs string
+	}{
+		{name: "enforce clears", mode: modeEnforce, since: t0, inputs: "a", newInputs: "a"},
+		{name: "auto latched keeps", mode: modeAuto, latched: true, since: t0, inputs: "a", newInputs: "b", wantSince: t0, wantInputs: "a"},
+		{name: "nil clock sets since and inputs", mode: modeAuto, newInputs: "b", wantSince: now, wantInputs: "b"},
+		{name: "changed inputs reset", mode: modeAuto, since: t0, inputs: "a", newInputs: "b", wantSince: now, wantInputs: "b"},
+		{name: "same inputs keep", mode: modeAuto, since: t0, inputs: "a", newInputs: "a", wantSince: t0, wantInputs: "a"},
+		{name: "observe with changed inputs resets", mode: modeObserve, since: t0, inputs: "a", newInputs: "b", wantSince: now, wantInputs: "b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := &pass{
+				source: &admissionregv1.ValidatingAdmissionPolicyBinding{Annotations: map[string]string{modeAnnotation: tt.mode}},
+				pe:     &karv1alpha1.PolicyExemption{},
+			}
+			if !tt.since.IsZero() {
+				p.pe.Status.ObservingSince = new(metav1.NewTime(tt.since))
+			}
+
+			p.pe.Status.ObservedInputs = tt.inputs
+			p.clock(tt.newInputs, tt.latched, now)
+
+			var gotSince time.Time
+			if p.pe.Status.ObservingSince != nil {
+				gotSince = p.pe.Status.ObservingSince.Time
+			}
+
+			if !gotSince.Equal(tt.wantSince) || p.pe.Status.ObservedInputs != tt.wantInputs {
+				t.Errorf("clock() = (%s, %q), want (%s, %q)", gotSince, p.pe.Status.ObservedInputs, tt.wantSince, tt.wantInputs)
 			}
 		})
 	}

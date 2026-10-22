@@ -33,6 +33,7 @@ const (
 
 	ReasonStateTooLarge = "StateTooLarge"
 	ReasonObserve       = "Observe"
+	ReasonCRDOutdated   = "CRDOutdated"
 
 	ReasonPolicyNotFound  = "PolicyNotFound"
 	ReasonNotAuditable    = "NotAuditable"
@@ -66,6 +67,10 @@ type PolicyExemptionStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	Namespaces []ExemptNamespace `json:"namespaces,omitempty"`
+	// ObservingSince is when the observation window of an auto binding started.
+	ObservingSince *metav1.Time `json:"observingSince,omitempty"`
+	// ObservedInputs is "policyUID/policyGeneration/bindingUID/bindingGeneration" when the observation window started.
+	ObservedInputs string `json:"observedInputs,omitempty"`
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

@@ -354,12 +354,13 @@ func (r *Reconciler) fingerprint(gvr schema.GroupVersionResource) string {
 
 // syncWatches swaps in the informers that have synced, starts the ones that are due, and retires the
 // informers of resources no auditor watches. active holds the active informer of each of watch, in
-// order, when ready. pending reports whether a replacement is still being built.
-func (r *Reconciler) syncWatches(ctx context.Context, watch []watched) (active []*gvrWatch, ready, pending bool, err error) {
+// order, when ready: an active informer counts only once it audits this source's current inputs, part.
+// pending reports whether a replacement is still being built.
+func (r *Reconciler) syncWatches(ctx context.Context, watch []watched, part string) (active []*gvrWatch, ready, pending bool, err error) {
 	ready = true
 
 	for _, w := range watch {
-		gw, busy, werr := r.syncWatch(ctx, w)
+		gw, busy, werr := r.syncWatch(ctx, w, part)
 		if werr != nil {
 			return nil, false, false, fmt.Errorf("informer for %s: %w", w.GVR.Resource, werr)
 		}
@@ -381,8 +382,8 @@ func (r *Reconciler) syncWatches(ctx context.Context, watch []watched) (active [
 }
 
 // syncWatch is syncWatches for one resource. It returns the active informer, nil until one has
-// synced, and whether a replacement is pending.
-func (r *Reconciler) syncWatch(ctx context.Context, w watched) (*gvrWatch, bool, error) {
+// synced and audits part, and whether a replacement is pending.
+func (r *Reconciler) syncWatch(ctx context.Context, w watched, part string) (*gvrWatch, bool, error) {
 	fp := r.fingerprint(w.GVR)
 
 	r.mu.Lock()
@@ -409,6 +410,11 @@ func (r *Reconciler) syncWatch(ctx context.Context, w watched) (*gvrWatch, bool,
 	r.mu.Lock()
 	active, pending := slot.active, slot.pending
 	r.mu.Unlock()
+
+	// An informer started under older inputs has not audited this source's current ones.
+	if active != nil && !slices.Contains(strings.Split(active.fingerprint, ","), part) {
+		active = nil
+	}
 
 	if active == nil && pending != nil {
 		if err := pending.lastErr(); err != nil {

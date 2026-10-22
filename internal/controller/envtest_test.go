@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -51,6 +52,7 @@ var (
 	errMismatch       = errors.New("unexpected state")
 	errStillDerived   = errors.New("derived binding not removed")
 	errNotEstablished = errors.New("CRD not established")
+	errStillPresent   = errors.New("policy still present")
 )
 
 func newScheme() *runtime.Scheme {
@@ -495,6 +497,854 @@ func TestShortTTLStatusTracksExpiration(t *testing.T) {
 	})
 }
 
+// observingSince returns the observation clock of the exemption and the inputs it started under. The clock is
+// zero when it has not started.
+func observingSince(ctx context.Context, c client.Client) (time.Time, string, error) {
+	pe := &karv1alpha1.PolicyExemption{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+		return time.Time{}, "", fmt.Errorf("get exemption: %w", err)
+	}
+
+	var since time.Time
+	if pe.Status.ObservingSince != nil {
+		since = pe.Status.ObservingSince.Time
+	}
+
+	return since, pe.Status.ObservedInputs, nil
+}
+
+// waitClock waits up to a minute for the observation clock to start, and returns it with the inputs it started under.
+func waitClock(t *testing.T, c client.Client) (time.Time, string) {
+	t.Helper()
+
+	var (
+		since  time.Time
+		inputs string
+	)
+
+	eventually(t, time.Minute, func() error {
+		var err error
+
+		since, inputs, err = observingSince(t.Context(), c)
+		if err != nil {
+			return err
+		}
+
+		if since.IsZero() {
+			return fmt.Errorf("%w: observingSince unset", errMismatch)
+		}
+
+		return nil
+	})
+
+	return since, inputs
+}
+
+// enforcingIs returns an error unless the Enforcing condition of the exemption has status and reason.
+func enforcingIs(ctx context.Context, c client.Client, status metav1.ConditionStatus, reason string) error {
+	pe := &karv1alpha1.PolicyExemption{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+		return fmt.Errorf("get exemption: %w", err)
+	}
+
+	cond := meta.FindStatusCondition(pe.Status.Conditions, karv1alpha1.ConditionEnforcing)
+	if cond == nil || cond.Status != status || cond.Reason != reason {
+		return fmt.Errorf("%w: Enforcing %+v, want %s %s", errMismatch, cond, status, reason)
+	}
+
+	return nil
+}
+
+// derivedGone returns an error unless the derived binding of the source is absent.
+func derivedGone(ctx context.Context, c client.Client) error {
+	err := c.Get(ctx, client.ObjectKey{Name: derivedName(sourceName)}, &admissionregv1.ValidatingAdmissionPolicyBinding{})
+	if err == nil {
+		return errStillDerived
+	}
+
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get derived binding: %w", err)
+	}
+
+	return nil
+}
+
+// deletePolicy deletes the source policy, waits until it is gone, and returns it for recreation.
+func deletePolicy(t *testing.T, c client.Client) *admissionregv1.ValidatingAdmissionPolicy {
+	t.Helper()
+
+	ctx := t.Context()
+	policy := &admissionregv1.ValidatingAdmissionPolicy{}
+
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, policy); err != nil {
+		t.Fatalf("get policy: %v", err)
+	}
+
+	if err := c.Delete(ctx, policy); err != nil {
+		t.Fatalf("delete policy: %v", err)
+	}
+
+	eventually(t, time.Minute, func() error {
+		err := c.Get(ctx, client.ObjectKey{Name: sourceName}, &admissionregv1.ValidatingAdmissionPolicy{})
+		if err == nil {
+			return errStillPresent
+		}
+
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("get policy: %w", err)
+		}
+
+		return nil
+	})
+
+	return policy
+}
+
+func TestAutoSwitchesAfterTTL(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "10s"}))
+	waitClock(t, c)
+
+	eventually(t, time.Minute, func() error {
+		if err := recorded(ctx, c); err != nil {
+			return err
+		}
+
+		return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve)
+	})
+
+	if err := c.Get(ctx, client.ObjectKey{Name: derivedName(sourceName)}, &admissionregv1.ValidatingAdmissionPolicyBinding{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("%s: want NotFound while observing, got %v", derivedName(sourceName), err)
+	}
+
+	eventually(t, time.Minute, func() error {
+		if err := derivedIs(ctx, c, []string{"bad"}); err != nil {
+			return err
+		}
+
+		return enforcingIs(ctx, c, metav1.ConditionTrue, karv1alpha1.ReasonEnforcing)
+	})
+}
+
+func TestAutoRestartKeepsClock(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	stop := startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "15s"}))
+
+	since, _ := waitClock(t, c)
+
+	stop()
+	startController(t, cfg)
+
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	got, _, err := observingSince(ctx, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !got.Equal(since) {
+		t.Fatalf("observingSince %s after restart, want %s", got, since)
+	}
+}
+
+func TestAutoPolicyChangeResetsClock(t *testing.T) {
+	t.Parallel()
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "1h"}))
+
+	since, inputs := waitClock(t, c)
+
+	// The clock is kept to whole seconds, so wait past one before a reset can show.
+	time.Sleep(1100 * time.Millisecond)
+
+	p := &admissionregv1.ValidatingAdmissionPolicy{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, p); err != nil {
+		t.Fatalf("get policy: %v", err)
+	}
+
+	p.Spec.Validations[0].Message = "changed"
+
+	if err := c.Update(ctx, p); err != nil {
+		t.Fatalf("update policy: %v", err)
+	}
+
+	eventually(t, time.Minute, func() error {
+		got, gotInputs, err := observingSince(ctx, c)
+		if err != nil {
+			return err
+		}
+
+		if gotInputs == inputs {
+			return fmt.Errorf("%w: observedInputs still %q", errMismatch, inputs)
+		}
+
+		if !got.After(since) {
+			return fmt.Errorf("%w: observingSince %s, want after %s", errMismatch, got, since)
+		}
+
+		return nil
+	})
+
+	if err := c.Get(ctx, client.ObjectKey{Name: derivedName(sourceName)}, &admissionregv1.ValidatingAdmissionPolicyBinding{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("%s: want NotFound after the reset, got %v", derivedName(sourceName), err)
+	}
+}
+
+func TestAutoPolicyRecreateResetsClock(t *testing.T) {
+	t.Parallel()
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "1h"}))
+
+	since, inputs := waitClock(t, c)
+
+	// The clock is kept to whole seconds, so wait past one before a reset can show.
+	time.Sleep(1100 * time.Millisecond)
+
+	policy := &admissionregv1.ValidatingAdmissionPolicy{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, policy); err != nil {
+		t.Fatalf("get policy: %v", err)
+	}
+
+	if err := c.Delete(ctx, policy); err != nil {
+		t.Fatalf("delete policy: %v", err)
+	}
+
+	eventually(t, time.Minute, func() error {
+		err := c.Get(ctx, client.ObjectKey{Name: sourceName}, &admissionregv1.ValidatingAdmissionPolicy{})
+		if err == nil {
+			return errStillPresent
+		}
+
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("get policy: %w", err)
+		}
+
+		return nil
+	})
+
+	// A recreated policy starts at generation 1 again, so only its UID tells it from the one the clock started under.
+	createAll(t, c, []client.Object{&admissionregv1.ValidatingAdmissionPolicy{Name: sourceName, Spec: policy.Spec}})
+
+	eventually(t, time.Minute, func() error {
+		got, gotInputs, err := observingSince(ctx, c)
+		if err != nil {
+			return err
+		}
+
+		if gotInputs == inputs {
+			return fmt.Errorf("%w: observedInputs still %q", errMismatch, inputs)
+		}
+
+		if !got.After(since) {
+			return fmt.Errorf("%w: observingSince %s, want after %s", errMismatch, got, since)
+		}
+
+		return nil
+	})
+}
+
+func TestAutoPolicyRecreatedWhileDownObservesAgain(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	stop := startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "3s"}))
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	since, _ := waitClock(t, c)
+
+	stop()
+
+	// The window that restarts below must stay open, so the binding cannot switch again during the test.
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[ttlAnnotation] = "1h"
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("raise ttl: %v", err)
+	}
+
+	policy := deletePolicy(t, c)
+
+	// The clock is kept to whole seconds, so wait past one before the new window can show.
+	time.Sleep(1100 * time.Millisecond)
+
+	createAll(t, c, []client.Object{&admissionregv1.ValidatingAdmissionPolicy{Name: sourceName, Spec: policy.Spec}})
+	startController(t, cfg)
+
+	eventually(t, time.Minute, func() error {
+		if err := derivedGone(ctx, c); err != nil {
+			return err
+		}
+
+		got, _, err := observingSince(ctx, c)
+		if err != nil {
+			return err
+		}
+
+		if !got.After(since) {
+			return fmt.Errorf("%w: observingSince %s, want after %s", errMismatch, got, since)
+		}
+
+		return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve)
+	})
+}
+
+// TestAutoBindingRecreatedObservesAgain recreates the source binding before the garbage collector has removed what
+// kar wrote for the old one. envtest runs no garbage collector, so the old PolicyExemption and Deny binding stay.
+func TestAutoBindingRecreatedObservesAgain(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	objs := violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "3s"})
+	createAll(t, c, objs)
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	since, _ := waitClock(t, c)
+
+	b := objs[len(objs)-1].(*admissionregv1.ValidatingAdmissionPolicyBinding) //nolint:forcetypeassert // the fixture ends with the binding
+	if err := c.Delete(ctx, b); err != nil {
+		t.Fatalf("delete binding: %v", err)
+	}
+
+	// The clock is kept to whole seconds, so wait past one before the new window can show.
+	time.Sleep(1100 * time.Millisecond)
+
+	createAll(t, c, []client.Object{&admissionregv1.ValidatingAdmissionPolicyBinding{
+		Name:        sourceName,
+		Annotations: map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "1h"},
+		Spec:        b.Spec,
+	}})
+
+	eventually(t, time.Minute, func() error {
+		if err := derivedGone(ctx, c); err != nil {
+			return err
+		}
+
+		got, _, err := observingSince(ctx, c)
+		if err != nil {
+			return err
+		}
+
+		if !got.After(since) {
+			return fmt.Errorf("%w: observingSince %s, want after %s", errMismatch, got, since)
+		}
+
+		return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve)
+	})
+}
+
+// TestAutoInterruptedResetDoesNotLatch saves the reset clock of a recreated policy, then stops before the pass
+// removes the Deny binding the old policy left. The Deny binding must not count as latched.
+func TestAutoInterruptedResetDoesNotLatch(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	stop := startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "3s"}))
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	stop()
+
+	// The window that restarts below must stay open, so the binding cannot switch again during the test.
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[ttlAnnotation] = "1h"
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("raise ttl: %v", err)
+	}
+
+	policy := deletePolicy(t, c)
+	createAll(t, c, []client.Object{&admissionregv1.ValidatingAdmissionPolicy{Name: sourceName, Spec: policy.Spec}})
+
+	// Save the reset clock as a pass does, then stop before it removes the old Deny binding.
+	fresh := &admissionregv1.ValidatingAdmissionPolicy{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, fresh); err != nil {
+		t.Fatalf("get recreated policy: %v", err)
+	}
+
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	pe := &karv1alpha1.PolicyExemption{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+		t.Fatalf("get exemption: %v", err)
+	}
+
+	pe.Status.ObservingSince = new(metav1.Now())
+	pe.Status.ObservedInputs = fmt.Sprintf("%s/%d/%s/%d", fresh.UID, fresh.Generation, b.UID, b.Generation)
+
+	if err := c.Status().Update(ctx, pe); err != nil {
+		t.Fatalf("save reset clock: %v", err)
+	}
+
+	startController(t, cfg)
+
+	eventually(t, time.Minute, func() error {
+		if err := derivedGone(ctx, c); err != nil {
+			return err
+		}
+
+		return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve)
+	})
+}
+
+func TestAutoLatchSurvivesTTLRaise(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "3s"}))
+
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[ttlAnnotation] = "1h"
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("raise ttl: %v", err)
+	}
+
+	// The raised TTL puts the deadline in the future, so only the latch keeps the binding enforcing.
+	for range 20 {
+		if err := derivedIs(ctx, c, []string{"bad"}); err != nil {
+			t.Fatalf("derived binding lost after the TTL was raised: %v", err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// TestAutoLatchesLegacyDenyBinding switches an enforce binding to auto while kar is down, over a Deny binding
+// written by a kar that did not record the policy UID.
+func TestAutoLatchesLegacyDenyBinding(t *testing.T) {
+	t.Parallel()
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	stop := startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeEnforce}))
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+	stop()
+
+	derived := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: derivedName(sourceName)}, derived); err != nil {
+		t.Fatalf("get derived binding: %v", err)
+	}
+
+	delete(derived.Annotations, policyUIDAnnotation)
+
+	if err := c.Update(ctx, derived); err != nil {
+		t.Fatalf("strip policy uid: %v", err)
+	}
+
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[modeAnnotation] = modeAuto
+	b.Annotations[ttlAnnotation] = "1h"
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("switch to auto: %v", err)
+	}
+
+	startController(t, cfg)
+
+	for range 20 {
+		if err := derivedIs(ctx, c, []string{"bad"}); err != nil {
+			t.Fatalf("derived binding lost on switching to auto: %v", err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if err := enforcingIs(ctx, c, metav1.ConditionTrue, karv1alpha1.ReasonEnforcing); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAutoLegacyDenyBindingOfOldPolicyObserves recreates the policy while kar is down, under a Deny binding
+// without the policy UID that predates it, so auto observes the new policy.
+func TestAutoLegacyDenyBindingOfOldPolicyObserves(t *testing.T) {
+	t.Parallel()
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	stop := startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeEnforce}))
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+	stop()
+
+	derived := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: derivedName(sourceName)}, derived); err != nil {
+		t.Fatalf("get derived binding: %v", err)
+	}
+
+	delete(derived.Annotations, policyUIDAnnotation)
+
+	if err := c.Update(ctx, derived); err != nil {
+		t.Fatalf("strip policy uid: %v", err)
+	}
+
+	// Creation timestamps have a resolution of one second.
+	time.Sleep(time.Second)
+
+	policy := deletePolicy(t, c)
+	createAll(t, c, []client.Object{&admissionregv1.ValidatingAdmissionPolicy{Name: sourceName, Spec: policy.Spec}})
+
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[modeAnnotation] = modeAuto
+	b.Annotations[ttlAnnotation] = "1h"
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("switch to auto: %v", err)
+	}
+
+	startController(t, cfg)
+
+	eventually(t, time.Minute, func() error { return derivedGone(ctx, c) })
+	eventually(t, time.Minute, func() error { return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve) })
+}
+
+// TestAutoObsoleteDenyBindingRemovedWithOutdatedCRD recreates the policy of a switched auto binding while kar is
+// down and the CRD drops the clock. The pass stops before it binds, so the Deny binding of the old policy must go
+// before that.
+func TestAutoObsoleteDenyBindingRemovedWithOutdatedCRD(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	stop := startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "2s"}))
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+	stop()
+
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[ttlAnnotation] = "1h"
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("raise ttl: %v", err)
+	}
+
+	policy := deletePolicy(t, c)
+	createAll(t, c, []client.Object{&admissionregv1.ValidatingAdmissionPolicy{Name: sourceName, Spec: policy.Spec}})
+
+	dropClockFields(t, c)
+	waitPruned(t, c)
+	startController(t, cfg)
+
+	eventually(t, time.Minute, func() error { return derivedGone(ctx, c) })
+}
+
+func TestObserveToAutoCountsEarlierTime(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeObserve, ttlAnnotation: "5s"}))
+
+	since, _ := waitClock(t, c)
+
+	// Switch once the observation window is over. The clock started in observe must carry over.
+	time.Sleep(time.Until(since.Add(6 * time.Second)))
+
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[modeAnnotation] = modeAuto
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("switch to auto: %v", err)
+	}
+
+	eventually(t, 15*time.Second, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	got, _, err := observingSince(ctx, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !got.Equal(since) {
+		t.Fatalf("observingSince %s after the switch, want %s", got, since)
+	}
+}
+
+// dropClockFields removes status.observingSince and status.observedInputs from the PolicyExemption CRD's schema,
+// as the CRD of an outdated chart has them.
+func dropClockFields(t *testing.T, c client.Client) {
+	t.Helper()
+
+	ctx := t.Context()
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+
+	if err := c.Get(ctx, client.ObjectKey{Name: "policyexemptions.kar.zeman.dev"}, crd); err != nil {
+		t.Fatalf("get CRD: %v", err)
+	}
+
+	props := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["status"].Properties
+	delete(props, "observingSince")
+	delete(props, "observedInputs")
+
+	if err := c.Update(ctx, crd); err != nil {
+		t.Fatalf("drop the clock from the CRD: %v", err)
+	}
+}
+
+// waitPruned waits until the server prunes status.observingSince from a PolicyExemption. The schema change
+// applies asynchronously, so it probes with a throwaway object.
+func waitPruned(t *testing.T, c client.Client) {
+	t.Helper()
+
+	ctx := t.Context()
+	key := client.ObjectKey{Name: "probe"}
+	createAll(t, c, []client.Object{&karv1alpha1.PolicyExemption{Name: key.Name}})
+
+	eventually(t, time.Minute, func() error {
+		cur := &karv1alpha1.PolicyExemption{}
+		if err := c.Get(ctx, key, cur); err != nil {
+			return fmt.Errorf("get probe: %w", err)
+		}
+
+		cur.Status.ObservingSince = new(metav1.Now())
+		if err := c.Status().Update(ctx, cur); err != nil {
+			return fmt.Errorf("write probe status: %w", err)
+		}
+
+		back := &karv1alpha1.PolicyExemption{}
+		if err := c.Get(ctx, key, back); err != nil {
+			return fmt.Errorf("read back probe: %w", err)
+		}
+
+		if back.Status.ObservingSince != nil {
+			return fmt.Errorf("%w: observingSince not pruned", errMismatch)
+		}
+
+		return nil
+	})
+
+	if err := c.Delete(ctx, &karv1alpha1.PolicyExemption{Name: key.Name}); err != nil {
+		t.Fatalf("delete probe: %v", err)
+	}
+}
+
+// TestAutoOutdatedCRD serves the PolicyExemption CRD without status.observingSince, as an outdated chart does.
+// The server drops the clock on every write, so kar must report why auto never switches.
+func TestAutoOutdatedCRD(t *testing.T) {
+	t.Parallel()
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+
+	dropClockFields(t, c)
+	waitPruned(t, c)
+
+	startController(t, cfg)
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "2s"}))
+
+	eventually(t, time.Minute, func() error {
+		pe := &karv1alpha1.PolicyExemption{}
+		if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+			return fmt.Errorf("get exemption: %w", err)
+		}
+
+		cond := meta.FindStatusCondition(pe.Status.Conditions, karv1alpha1.ConditionSynced)
+		if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != karv1alpha1.ReasonCRDOutdated {
+			return fmt.Errorf("%w: Synced %+v, want False %s", errMismatch, cond, karv1alpha1.ReasonCRDOutdated)
+		}
+
+		return nil
+	})
+
+	// The TTL passes more than twice over, but the clock is never kept, so auto must not switch.
+	for range 10 {
+		if err := c.Get(ctx, client.ObjectKey{Name: derivedName(sourceName)}, &admissionregv1.ValidatingAdmissionPolicyBinding{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("%s: want NotFound while the CRD is outdated, got %v", derivedName(sourceName), err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// TestObserveRemovesDenyBindingWithOutdatedCRD switches an enforcing binding to observe while the CRD drops the clock.
+// The outdated CRD stops the pass before it binds, so observe must remove the Deny binding without that pass.
+func TestObserveRemovesDenyBindingWithOutdatedCRD(t *testing.T) {
+	t.Parallel()
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeEnforce}))
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	dropClockFields(t, c)
+	waitPruned(t, c)
+
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[modeAnnotation] = modeObserve
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("switch to observe: %v", err)
+	}
+
+	eventually(t, time.Minute, func() error { return derivedGone(ctx, c) })
+	eventually(t, time.Minute, func() error { return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve) })
+}
+
+// TestOutdatedCRDStatusSettles checks that an outdated CRD costs no status write per pass once reported.
+func TestOutdatedCRDStatusSettles(t *testing.T) {
+	t.Parallel()
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+
+	dropClockFields(t, c)
+	waitPruned(t, c)
+
+	startController(t, cfg)
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto}))
+
+	pe := &karv1alpha1.PolicyExemption{}
+
+	eventually(t, time.Minute, func() error {
+		if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+			return fmt.Errorf("get exemption: %w", err)
+		}
+
+		cond := meta.FindStatusCondition(pe.Status.Conditions, karv1alpha1.ConditionSynced)
+		if cond == nil || cond.Reason != karv1alpha1.ReasonCRDOutdated {
+			return fmt.Errorf("%w: Synced %+v, want %s", errMismatch, cond, karv1alpha1.ReasonCRDOutdated)
+		}
+
+		return nil
+	})
+
+	time.Sleep(2 * time.Second)
+
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+		t.Fatalf("get exemption: %v", err)
+	}
+
+	// Each annotation change runs a pass.
+	for i := range 3 {
+		b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+		if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+			t.Fatalf("get binding: %v", err)
+		}
+
+		b.Annotations["poke"] = strconv.Itoa(i)
+		if err := c.Update(ctx, b); err != nil {
+			t.Fatalf("poke binding: %v", err)
+		}
+
+		time.Sleep(time.Second)
+	}
+
+	after := &karv1alpha1.PolicyExemption{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, after); err != nil {
+		t.Fatalf("get exemption: %v", err)
+	}
+
+	if after.ResourceVersion != pe.ResourceVersion {
+		t.Fatalf("status rewritten on every pass: resourceVersion %s, then %s", pe.ResourceVersion, after.ResourceVersion)
+	}
+}
+
 // statusExpiration returns ns's expiration as the PolicyExemption status records it.
 func statusExpiration(ctx context.Context, c client.Client, ns string) (time.Time, error) {
 	pe := &karv1alpha1.PolicyExemption{}
@@ -881,6 +1731,49 @@ func TestPolicyChangeReevaluates(t *testing.T) {
 	}
 }
 
+// TestNewSourceOnSharedInformerKeepsExemptions checks that a source bound while another source already
+// watches the same resource never publishes a Deny binding before its own audit has run.
+func TestNewSourceOnSharedInformerKeepsExemptions(t *testing.T) {
+	t.Parallel()
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeEnforce}))
+
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	// The second source matches the same ConfigMaps, so it shares the informer the first one has active.
+	second := violatingFixture(map[string]string{modeAnnotation: modeEnforce})
+	policy, okPolicy := second[2].(*admissionregv1.ValidatingAdmissionPolicy)
+
+	binding, okBinding := second[3].(*admissionregv1.ValidatingAdmissionPolicyBinding)
+	if !okPolicy || !okBinding {
+		t.Fatal("violatingFixture no longer has a policy and binding at 2 and 3")
+	}
+
+	policy.Name = "second"
+	binding.Name, binding.Spec.PolicyName = "second", "second"
+	createAll(t, c, []client.Object{policy, binding})
+
+	// A stale audit writes the first derived binding without exemptions, so check it as soon as it appears.
+	err := wait.PollUntilContextTimeout(ctx, 20*time.Millisecond, time.Minute, true, func(ctx context.Context) (bool, error) {
+		b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+		if err := c.Get(ctx, client.ObjectKey{Name: derivedName("second")}, b); err != nil {
+			return false, client.IgnoreNotFound(err)
+		}
+
+		if got := notIn(b); !slices.Equal(got, []string{"bad"}) {
+			t.Fatalf("first derived binding of second exempts %v, want [bad]", got)
+		}
+
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("derived binding of second not created: %v", err)
+	}
+}
+
 // widgetCRD is served at v1 (storage) and v1beta1 with one schema, so a rule can name either version.
 func widgetCRD() *apiextensionsv1.CustomResourceDefinition {
 	validation := &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{Type: "object", XPreserveUnknownFields: new(true)}}
@@ -962,6 +1855,43 @@ func TestPinnedVersionViolationIsExempted(t *testing.T) {
 	startController(t, cfg)
 
 	eventually(t, 30*time.Second, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+}
+
+// TestPolicyDeleteRemovesDenyBinding checks that deleting the policy removes the Deny binding kar wrote for
+// it, so a policy recreated under the same name is observed first. The exemptions stay.
+func TestPolicyDeleteRemovesDenyBinding(t *testing.T) {
+	t.Parallel()
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeEnforce}))
+
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+
+	deletePolicy(t, c)
+
+	eventually(t, time.Minute, func() error { return derivedGone(ctx, c) })
+
+	eventually(t, time.Minute, func() error {
+		pe := &karv1alpha1.PolicyExemption{}
+		if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+			return fmt.Errorf("get exemption: %w", err)
+		}
+
+		for _, typ := range []string{karv1alpha1.ConditionSynced, karv1alpha1.ConditionEnforcing} {
+			cond := meta.FindStatusCondition(pe.Status.Conditions, typ)
+			if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != karv1alpha1.ReasonPolicyNotFound {
+				return fmt.Errorf("%w: %s %+v, want False %s", errMismatch, typ, cond, karv1alpha1.ReasonPolicyNotFound)
+			}
+		}
+
+		return nil
+	})
+
+	if err := recorded(ctx, c); err != nil {
+		t.Fatalf("exemption dropped with the policy: %v", err)
+	}
 }
 
 func TestUnauditablePolicyRemovesDenyBinding(t *testing.T) {

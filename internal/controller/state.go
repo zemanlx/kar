@@ -89,6 +89,21 @@ func toStatus(e exemptions) []karv1alpha1.ExemptNamespace {
 	return out
 }
 
+// effectiveMode returns the mode kar applies for a binding annotated with mode. An auto binding enforces
+// once since plus ttl has passed, or at once when latched; until then it observes. A zero since means the
+// observation clock has not started.
+func effectiveMode(mode string, since time.Time, ttl time.Duration, latched bool, now time.Time) string {
+	if mode != modeAuto {
+		return mode
+	}
+
+	if latched || (!since.IsZero() && !now.Before(since.Add(ttl))) {
+		return modeEnforce
+	}
+
+	return modeObserve
+}
+
 // needsWrite reports whether the persisted status differs from e enough to be worth a write: a
 // different set of namespaces, or an expiration pushed back by at least statusStep or ttl, whichever
 // is shorter. A new leader loads the persisted expirations, so they may trail by less than one ttl.
