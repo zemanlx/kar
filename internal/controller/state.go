@@ -37,6 +37,19 @@ func (e exemptions) see(ns string, now time.Time, ttl time.Duration) bool {
 	return !added
 }
 
+// capAt lowers each expiration that is later than now plus ttl. kar keeps no last-seen time, so now plus ttl is the
+// tightest bound that never ends an exemption before one ttl after its last sighting.
+func (e exemptions) capAt(now time.Time, ttl time.Duration) {
+	limit := now.Add(ttl)
+
+	for ns, en := range e {
+		if en.Expiration.After(limit) {
+			en.Expiration = limit
+			e[ns] = en
+		}
+	}
+}
+
 // expire drops entries that have expired or whose namespace no longer exists.
 func (e exemptions) expire(now time.Time, exists func(ns string) bool) {
 	for ns, en := range e {
@@ -105,8 +118,9 @@ func effectiveMode(mode string, since time.Time, ttl time.Duration, latched bool
 }
 
 // needsWrite reports whether the persisted status differs from e enough to be worth a write: a
-// different set of namespaces, or an expiration pushed back by at least statusStep or ttl, whichever
-// is shorter. A new leader loads the persisted expirations, so they may trail by less than one ttl.
+// different set of namespaces, or an expiration that moved by at least statusStep or ttl, whichever
+// is shorter, earlier or later. The status holds whole seconds, so a persisted expiration may be
+// slightly earlier than e's; a new leader loads it and may trail by less than one ttl.
 func needsWrite(persisted []karv1alpha1.ExemptNamespace, e exemptions, ttl time.Duration) bool {
 	if len(persisted) != len(e) {
 		return true
@@ -116,7 +130,7 @@ func needsWrite(persisted []karv1alpha1.ExemptNamespace, e exemptions, ttl time.
 
 	for _, p := range persisted {
 		en, ok := e[p.Name]
-		if !ok || en.Expiration.Sub(p.Expiration.Time) >= step {
+		if !ok || en.Expiration.Sub(p.Expiration.Time).Abs() >= step {
 			return true
 		}
 	}

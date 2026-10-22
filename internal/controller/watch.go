@@ -332,6 +332,8 @@ func refresh(ctx context.Context, a *auditor, active []*gvrWatch, now time.Time)
 		}
 	}
 
+	a.state.capAt(now, a.ttl)
+
 	return counts
 }
 

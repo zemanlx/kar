@@ -191,7 +191,7 @@ flowchart LR
    - Before the switch, a spec change to the policy or the source binding restarts the clock, since what the policy denies may have changed. So does deleting and recreating the policy or the source binding, or deleting the `PolicyExemption`. The restart waits for the replacement informers to sync, so `auto` does not switch on the old audit. Editing the `mode` or `ttl` annotation does not restart the clock, but a new TTL moves the deadline.
    - After the switch, `auto` stays enforcing: a later TTL or policy change does not turn it off.
    - `observe` keeps the clock too, so switching `observe` to `auto` counts the time already observed. `enforce` clears it, and switching `enforce` to `auto` keeps enforcing, also over a Deny binding written by a kar release without `auto`.
-6. **Expire.** The TTL slides: a namespace stays exempt until one TTL after kar last saw a violator in it. Once a minute kar refreshes the exemptions of namespaces that still have violators, from the in-memory index, and drops namespaces that have expired or been deleted. Then it updates the status and the Deny binding.
+6. **Expire.** The TTL slides: a namespace stays exempt until one TTL after kar last saw a violator in it. A shorter `kar.zeman.dev/ttl` takes effect at once: no exemption lasts longer than one new TTL from the change. Once a minute kar refreshes the exemptions of namespaces that still have violators, from the in-memory index, and drops namespaces that have expired or been deleted. Then it updates the status and the Deny binding.
 
 What makes kar re-evaluate:
 
