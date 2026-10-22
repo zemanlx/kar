@@ -808,9 +808,21 @@ func (r *Reconciler) namespaceObject(ctx context.Context, name string) (*unstruc
 }
 
 // namespaceExists reports whether the namespace exists. Any error other than NotFound counts as
-// existing, so a transient failure does not drop an exemption.
+// existing, so a transient failure does not drop an exemption. The cache can lag behind the objects'
+// informers, so a cache NotFound is confirmed with a live read before the namespace counts as gone.
+// ponytail: the live read of a deleted namespace runs under auditor.mu, once in the pass that drops it.
+// Ceiling: one API round trip per deleted namespace while the informer transforms wait for the lock.
+// Upgrade path: collect the candidates under the lock and check them after unlocking.
 func (r *Reconciler) namespaceExists(ctx context.Context, name string) bool {
-	return !apierrors.IsNotFound(r.Client.Get(ctx, client.ObjectKey{Name: name}, &corev1.Namespace{}))
+	key := client.ObjectKey{Name: name}
+	ns := &corev1.Namespace{}
+
+	err := r.Client.Get(ctx, key, ns)
+	if apierrors.IsNotFound(err) {
+		err = r.apiReader.Get(ctx, key, ns)
+	}
+
+	return !apierrors.IsNotFound(err)
 }
 
 // bind applies the derived binding of the policy with UID uid when eff is enforce and removes it otherwise.
