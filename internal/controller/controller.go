@@ -288,6 +288,10 @@ func (p *pass) check(ctx context.Context) (*checked, ctrl.Result, error) {
 		return nil, ctrl.Result{RequeueAfter: resync}, errors.Join(p.r.remove(ctx, p.source.Name), p.save(ctx))
 	}
 
+	if err := p.dropObsolete(ctx, policy); err != nil {
+		return nil, ctrl.Result{}, p.fail(ctx, karv1alpha1.ReasonApplyFailed, err)
+	}
+
 	compiled, issues, err := p.r.compile(policy, p.source)
 	if err != nil {
 		return nil, ctrl.Result{}, err
@@ -438,8 +442,30 @@ func (p *pass) latched(ctx context.Context, policy *admissionregv1.ValidatingAdm
 		return false, err
 	}
 
-	if !owned(derived, p.source.Name) || metav1.GetControllerOf(derived).UID != p.source.UID {
-		return false, nil
+	return owned(derived, p.source.Name) && p.current(derived, policy), nil
+}
+
+// dropObsolete removes an auto binding's Deny binding written for an earlier policy or source binding, before
+// the checks and the informers can stop the pass, so the replacement observes.
+func (p *pass) dropObsolete(ctx context.Context, policy *admissionregv1.ValidatingAdmissionPolicy) error {
+	if mode(p.source) != modeAuto {
+		return nil
+	}
+
+	derived, err := p.r.derived(ctx, p.source.Name)
+	if err != nil || !owned(derived, p.source.Name) || p.current(derived, policy) {
+		return err
+	}
+
+	setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "auto: the observation window has not started")
+
+	return p.r.deleteIfExists(ctx, derived)
+}
+
+// current reports whether kar wrote derived, a Deny binding it owns, for p's source binding and policy.
+func (p *pass) current(derived *admissionregv1.ValidatingAdmissionPolicyBinding, policy *admissionregv1.ValidatingAdmissionPolicy) bool {
+	if metav1.GetControllerOf(derived).UID != p.source.UID {
+		return false
 	}
 
 	uid, ok := derived.Annotations[policyUIDAnnotation]
@@ -447,10 +473,10 @@ func (p *pass) latched(ctx context.Context, policy *admissionregv1.ValidatingAdm
 		// ponytail: a Deny binding from a kar that did not record the policy UID counts when it is not older
 		// than the policy. Ceiling: a policy recreated within a second of it. Upgrade path: drop this once
 		// every supported kar records the UID.
-		return !derived.CreationTimestamp.Before(&policy.CreationTimestamp), nil
+		return !derived.CreationTimestamp.Before(&policy.CreationTimestamp)
 	}
 
-	return uid == string(policy.UID), nil
+	return uid == string(policy.UID)
 }
 
 // clock keeps the observation window of a binding. The window restarts when the inputs change and is cleared
@@ -463,7 +489,8 @@ func (p *pass) clock(inputs string, latched bool, now time.Time) {
 		st.ObservingSince, st.ObservedInputs = nil, ""
 	case m == modeAuto && latched:
 	case st.ObservingSince == nil || st.ObservedInputs != inputs:
-		st.ObservingSince, st.ObservedInputs = new(metav1.NewTime(now)), inputs
+		// The status stores whole seconds, so the start rounds up to never precede this pass.
+		st.ObservingSince, st.ObservedInputs = new(metav1.NewTime(now.Add(time.Second-1).Truncate(time.Second))), inputs
 	}
 }
 

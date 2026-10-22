@@ -1077,6 +1077,46 @@ func TestAutoLegacyDenyBindingOfOldPolicyObserves(t *testing.T) {
 	eventually(t, time.Minute, func() error { return enforcingIs(ctx, c, metav1.ConditionFalse, karv1alpha1.ReasonObserve) })
 }
 
+// TestAutoObsoleteDenyBindingRemovedWithOutdatedCRD recreates the policy of a switched auto binding while kar is
+// down and the CRD drops the clock. The pass stops before it binds, so the Deny binding of the old policy must go
+// before that.
+func TestAutoObsoleteDenyBindingRemovedWithOutdatedCRD(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("waits for the TTL to pass")
+	}
+
+	cfg := startAPIServer(t, nil)
+	c := newClient(t, cfg)
+	ctx := t.Context()
+	stop := startController(t, cfg)
+
+	createAll(t, c, violatingFixture(map[string]string{modeAnnotation: modeAuto, ttlAnnotation: "2s"}))
+	eventually(t, time.Minute, func() error { return derivedIs(ctx, c, []string{"bad"}) })
+	stop()
+
+	b := &admissionregv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, b); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	b.Annotations[ttlAnnotation] = "1h"
+
+	if err := c.Update(ctx, b); err != nil {
+		t.Fatalf("raise ttl: %v", err)
+	}
+
+	policy := deletePolicy(t, c)
+	createAll(t, c, []client.Object{&admissionregv1.ValidatingAdmissionPolicy{Name: sourceName, Spec: policy.Spec}})
+
+	dropClockFields(t, c)
+	waitPruned(t, c)
+	startController(t, cfg)
+
+	eventually(t, time.Minute, func() error { return derivedGone(ctx, c) })
+}
+
 func TestObserveToAutoCountsEarlierTime(t *testing.T) {
 	t.Parallel()
 

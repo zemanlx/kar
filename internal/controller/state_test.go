@@ -247,6 +247,25 @@ func TestEffectiveMode(t *testing.T) {
 	}
 }
 
+// TestPassClockNeverStartsEarly checks that a window started mid-second does not start before its pass once the
+// status stores it at whole seconds.
+func TestPassClockNeverStartsEarly(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 14, 12, 0, 0, 900_000_000, time.UTC)
+	p := &pass{
+		source: &admissionregv1.ValidatingAdmissionPolicyBinding{Annotations: map[string]string{modeAnnotation: modeAuto}},
+		pe:     &karv1alpha1.PolicyExemption{},
+	}
+
+	p.clock("a", false, now)
+
+	stored := p.pe.Status.ObservingSince.Rfc3339Copy().Time
+	if stored.Before(now) {
+		t.Errorf("observingSince stored as %s, before the pass at %s", stored, now)
+	}
+}
+
 func TestPassClock(t *testing.T) {
 	t.Parallel()
 

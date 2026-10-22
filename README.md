@@ -204,7 +204,7 @@ What makes kar re-evaluate:
 Ownership and failure handling:
 
 - The `PolicyExemption` and the Deny binding are owned by the source binding. Removing the mode annotation makes kar delete them, and deleting the source binding lets the garbage collector delete them even when kar is down. Switching to `observe` makes kar delete the Deny binding at once, even while the audit is still syncing.
-- Deleting the policy makes kar remove the Deny binding and keep the `PolicyExemption`, so its exemptions survive. A policy recreated under the same name starts a fresh `auto` window, also when it was recreated while kar was down.
+- Deleting the policy makes kar remove the Deny binding and keep the `PolicyExemption`, so its exemptions survive. A policy recreated under the same name starts a fresh `auto` window, also when it was recreated while kar was down; kar removes the old policy's Deny binding at once, even while the audit cannot run.
 - A policy kar cannot audit gets `Auditable=False` and no Deny binding. See [What kar can audit](#what-kar-can-audit).
 - The `PolicyExemption` status is kar's durable state. A new leader recovers the exemptions from it and from the Deny binding, then refreshes them on its first pass.
 
