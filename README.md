@@ -233,6 +233,7 @@ Some inputs exist only in a real request. kar does not fake them, because a poli
 A policy is not auditable when:
 
 - `matchConstraints` does not match CREATE, or
+- a resource rule of `matchConstraints` or of the binding's `matchResources` matches UPDATE but not CREATE, or an excluded rule excludes CREATE but not UPDATE, since kar would find no violators that enforcement then denies on update, or
 - any validation `expression` or `messageExpression`, `auditAnnotations` value, `matchConditions` expression or `variables` expression reads one of the inputs above, or
 - such an expression uses `request` other than by naming a field (for example `cel.bind(r, request, ...)` or a computed key), since kar then cannot tell which fields it reads, or
 - such an expression cannot be parsed, or

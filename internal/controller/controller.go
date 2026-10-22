@@ -607,6 +607,7 @@ func (p *pass) fail(ctx context.Context, reason string, err error) error {
 // issue rather than an error, so it is reported on the status.
 func (r *Reconciler) compile(policy *admissionregv1.ValidatingAdmissionPolicy, source *admissionregv1.ValidatingAdmissionPolicyBinding) (*evaluator.CompiledValidating, []string, error) {
 	issues := auditIssues(policy)
+	issues = append(issues, matchIssues("binding matchResources", source.Spec.MatchResources)...)
 
 	compiled, err := r.Evaluator.CompileValidating(policy, denySemantics(source))
 	if rejected, ok := errors.AsType[*evaluator.InvalidPolicyError](err); ok {
