@@ -557,15 +557,15 @@ func (r *Reconciler) markDirty(match func(gvr schema.GroupVersionResource, w wat
 	}
 }
 
-// namespaceHandler queues a namespace whose labels change for reaudit, since a namespaceSelector or a
-// CEL expression that reads namespaceObject can flip a verdict without the object changing.
+// namespaceHandler queues a namespace whose labels or annotations change for reaudit, since a namespaceSelector
+// or a CEL expression that reads namespaceObject can flip a verdict without the object changing.
 func (r *Reconciler) namespaceHandler() handler.Funcs {
 	return handler.Funcs{
 		UpdateFunc: func(_ context.Context, e event.UpdateEvent, _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			oldNS, okOld := e.ObjectOld.(*corev1.Namespace)
 			newNS, okNew := e.ObjectNew.(*corev1.Namespace)
 
-			if !okOld || !okNew || maps.Equal(oldNS.Labels, newNS.Labels) {
+			if !okOld || !okNew || (maps.Equal(oldNS.Labels, newNS.Labels) && maps.Equal(oldNS.Annotations, newNS.Annotations)) {
 				return
 			}
 

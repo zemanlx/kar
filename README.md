@@ -198,7 +198,7 @@ What makes kar re-evaluate:
 | Change | What kar does |
 | --- | --- |
 | An object is created, updated or deleted | Evaluates it as the event arrives. A new violator exempts its namespace at once, so short-lived objects are not missed. |
-| A namespace's labels change | Re-lists the watched resources in that namespace only, since a `namespaceSelector` or `namespaceObject` can flip a verdict. |
+| A namespace's labels or annotations change | Re-lists the watched resources in that namespace only, since a `namespaceSelector` or `namespaceObject` can flip a verdict. |
 | The policy, the source binding or the params it reads change | Starts a new informer for each affected resource and swaps it in once it has synced, so there is no gap. |
 
 Ownership and failure handling:
@@ -215,7 +215,7 @@ kar evaluates objects that already exist, so there is no real admission request 
 | CEL input | Value in the audit |
 | --- | --- |
 | `object` | the object as stored |
-| `namespaceObject` | the object's Namespace, with its current labels |
+| `namespaceObject` | the object's Namespace, with its current labels and annotations |
 | `params` | resolved from the source binding's `paramRef`, as the API server does |
 | `request.name`, `request.namespace`, `request.kind`, `request.resource` | taken from the object |
 | `variables` | evaluated from the above |
@@ -229,7 +229,7 @@ Some inputs exist only in a real request. kar does not fake them, because a poli
 | `oldObject` | Only UPDATE and DELETE have one; an existing object has no "before". |
 | `request.operation` | The audit is always CREATE; real requests can be UPDATE or DELETE. |
 | `request.dryRun` | Only a real request has it. |
-
+| `request.options` | The request's options, such as `dryRun` and `fieldManager`; only a real request has them. |
 A policy is not auditable when:
 
 - `matchConstraints` does not match CREATE, or
@@ -405,7 +405,7 @@ Each ramp below grows one dimension until a step breaks its budget. The budget i
 | Bindings over the same objects | 50 to 350 | 300: converge in 27.6s, 97 MiB heap; 350 take over 30s. Time grows faster than linearly (10.3s at 200) |
 | Change rate (updates of violating objects) | 800, 1,600 updates/s | at least 800: a new violation is still recorded in 0.2s. Above that the test client tops out at about 1,100 updates/s, so kar's limit is unknown |
 
-A new or changed object is evaluated as its watch event arrives, so a new violation is recorded within seconds. A namespace label change makes kar re-list the watched resources in that namespace only, so objects it brings into (or out of) a policy's scope are re-evaluated within seconds.
+A new or changed object is evaluated as its watch event arrives, so a new violation is recorded within seconds. A namespace label or annotation change makes kar re-list the watched resources in that namespace only, so objects it brings into (or out of) a policy's scope are re-evaluated within seconds.
 
 ## Uninstall
 
