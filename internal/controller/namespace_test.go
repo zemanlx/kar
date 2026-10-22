@@ -1,9 +1,7 @@
 package controller
 
 import (
-	"slices"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -41,23 +39,5 @@ func TestNamespaceExistsMissingFromCache(t *testing.T) {
 				t.Errorf("namespaceExists(%q) = %v, want %v", tt.ns, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestExpireKeepsNamespaceMissingFromCache(t *testing.T) {
-	t.Parallel()
-
-	t0 := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
-	r := newNamespaceReconciler(&corev1.Namespace{Name: "fresh"})
-
-	e := exemptions{
-		"fresh": {FirstSeen: t0, Expiration: t0.Add(testTTL)},
-		"gone":  {FirstSeen: t0, Expiration: t0.Add(testTTL)},
-	}
-
-	e.expire(t0, func(ns string) bool { return r.namespaceExists(t.Context(), ns) })
-
-	if got, want := e.names(), []string{"fresh"}; !slices.Equal(got, want) {
-		t.Errorf("names() = %q, want %q", got, want)
 	}
 }

@@ -785,15 +785,8 @@ func (r *Reconciler) paramsBySelector(ctx context.Context, kind schema.GroupVers
 // ponytail: a namespace that is gone costs one live GET per object. Ceiling: a burst of objects in a
 // deleted namespace. Upgrade path: remember NotFound for the pass.
 func (r *Reconciler) namespaceObject(ctx context.Context, name string) (*unstructured.Unstructured, error) {
-	key := client.ObjectKey{Name: name}
 	ns := &corev1.Namespace{}
-
-	err := r.Client.Get(ctx, key, ns)
-	if apierrors.IsNotFound(err) {
-		err = r.apiReader.Get(ctx, key, ns)
-	}
-
-	if err != nil {
+	if err := r.getNamespace(ctx, name, ns); err != nil {
 		return nil, fmt.Errorf("get namespace: %w", err)
 	}
 
@@ -809,21 +802,23 @@ func (r *Reconciler) namespaceObject(ctx context.Context, name string) (*unstruc
 }
 
 // namespaceExists reports whether the namespace exists. Any error other than NotFound counts as
-// existing, so a transient failure does not drop an exemption. The cache can lag behind the objects'
-// informers, so a cache NotFound is confirmed with a live read before the namespace counts as gone.
+// existing, so a transient failure does not drop an exemption.
 // ponytail: the live read of a deleted namespace runs under auditor.mu, once in the pass that drops it.
 // Ceiling: one API round trip per deleted namespace while the informer transforms wait for the lock.
 // Upgrade path: collect the candidates under the lock and check them after unlocking.
 func (r *Reconciler) namespaceExists(ctx context.Context, name string) bool {
-	key := client.ObjectKey{Name: name}
-	ns := &corev1.Namespace{}
+	return !apierrors.IsNotFound(r.getNamespace(ctx, name, &corev1.Namespace{}))
+}
 
-	err := r.Client.Get(ctx, key, ns)
+// getNamespace reads the named Namespace from the cache. The Namespace informer can lag behind the objects'
+// informers, so NotFound falls back to a live read.
+func (r *Reconciler) getNamespace(ctx context.Context, name string, ns *corev1.Namespace) error {
+	err := r.Client.Get(ctx, client.ObjectKey{Name: name}, ns)
 	if apierrors.IsNotFound(err) {
-		err = r.apiReader.Get(ctx, key, ns)
+		err = r.apiReader.Get(ctx, client.ObjectKey{Name: name}, ns)
 	}
 
-	return !apierrors.IsNotFound(err)
+	return err //nolint:wrapcheck // callers wrap it or test it for NotFound
 }
 
 // bind applies the derived binding of the policy with UID uid when eff is enforce and removes it otherwise.
