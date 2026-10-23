@@ -24,14 +24,14 @@ Every supported minor is checked in CI (see [Testing](#testing)).
 ## Install
 
 ```bash
-helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.1.0 -n kar-system --create-namespace
+helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.2.0 -n kar-system --create-namespace
 ```
 
 The image `ghcr.io/zemanlx/kar` is built for `linux/amd64` and `linux/arm64`. The image and the chart carry GitHub build provenance attestations:
 
 ```bash
-gh attestation verify oci://ghcr.io/zemanlx/kar:0.1.0 --owner zemanlx
-gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.1.0 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/kar:0.2.0 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.2.0 --owner zemanlx
 ```
 
 The ClusterRole grants get/list/watch on every resource, Secrets included, because the audit reads whatever a policy matches. To grant less, set `rbac.rules`, or set `rbac.create: false` and bind a ClusterRole you already have. See [Configuration](#configuration).
@@ -458,7 +458,7 @@ hack/e2e.sh
 ```
 
 - `K8S_VERSION=1.36|1.37` (default `1.37`) picks the node image.
-- `KAR_VERSION=0.1.0` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.
+- `KAR_VERSION=0.2.0` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.
 - `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
 - Extra arguments go to the test binary, e.g. `hack/e2e.sh -test.run=TestHardening`.
 
