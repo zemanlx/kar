@@ -117,10 +117,10 @@ func effectiveMode(mode string, since time.Time, ttl time.Duration, latched bool
 	return modeObserve
 }
 
-// needsWrite reports whether the persisted status differs from e enough to be worth a write: a
-// different set of namespaces, or an expiration that moved by at least statusStep or ttl, whichever
-// is shorter, earlier or later. The status holds whole seconds, so a persisted expiration may be
-// slightly earlier than e's; a new leader loads it and may trail by less than one ttl.
+// needsWrite reports whether the persisted status differs from e enough to be worth a write: a different set of
+// namespaces, an expiration that moved later by at least statusStep or ttl, whichever is shorter, or one that
+// moved earlier by a second. Reductions are not batched, since a restart would reload the longer deadline; a
+// smaller change is below the status's one-second resolution.
 func needsWrite(persisted []karv1alpha1.ExemptNamespace, e exemptions, ttl time.Duration) bool {
 	if len(persisted) != len(e) {
 		return true
@@ -130,7 +130,12 @@ func needsWrite(persisted []karv1alpha1.ExemptNamespace, e exemptions, ttl time.
 
 	for _, p := range persisted {
 		en, ok := e[p.Name]
-		if !ok || en.Expiration.Sub(p.Expiration.Time).Abs() >= step {
+		if !ok {
+			return true
+		}
+
+		d := en.Expiration.Sub(p.Expiration.Time)
+		if d >= step || d <= -time.Second {
 			return true
 		}
 	}

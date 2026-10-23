@@ -233,12 +233,14 @@ func TestToStatusAndNeedsWrite(t *testing.T) {
 		{name: "expiration moved past the step", persisted: shifted(-time.Hour, "a"), want: true},
 		{name: "expiration cut by the step", persisted: shifted(statusStep, "a"), want: true},
 		{name: "expiration cut under a second", persisted: shifted(500*time.Millisecond, "a"), want: false},
+		{name: "expiration cut by two seconds", persisted: shifted(2*time.Second, "a"), want: true},
 		{name: "status truncated to whole seconds", persisted: shifted(-500*time.Millisecond, "a"), want: false},
 		{name: "namespace missing from status", persisted: persisted[:1], want: true},
 		{name: "namespace not yet exempt", persisted: append(slices.Clone(persisted), karv1alpha1.ExemptNamespace{Name: "c", Expiration: metav1.NewTime(t0)}), want: true},
 		{name: "short TTL: expiration moved under the TTL", persisted: shifted(-time.Minute, "a"), ttl: 2 * time.Minute, want: false},
 		{name: "short TTL: expiration moved by the TTL", persisted: shifted(-2*time.Minute, "a"), ttl: 2 * time.Minute, want: true},
 		{name: "short TTL: expiration cut by the TTL", persisted: shifted(2*time.Minute, "a"), ttl: 2 * time.Minute, want: true},
+		{name: "expiration cut by 30m under a 90m TTL", persisted: shifted(30*time.Minute, "a"), ttl: 90 * time.Minute, want: true},
 	}
 
 	for _, tt := range tests {
@@ -355,5 +357,32 @@ func TestPassClock(t *testing.T) {
 				t.Errorf("clock() = (%s, %q), want (%s, %q)", gotSince, p.pe.Status.ObservedInputs, tt.wantSince, tt.wantInputs)
 			}
 		})
+	}
+}
+
+func TestRefreshKeepsLaterSighting(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	seen := now.Add(5 * time.Second)
+	a := &auditor{ttl: testTTL, state: exemptions{}, pending: map[string]time.Time{"ns": seen}}
+
+	refresh(t.Context(), a, nil, now)
+
+	if got, want := a.state["ns"].Expiration, seen.Add(testTTL); !got.Equal(want) {
+		t.Errorf("expiration = %s, want %s", got, want)
+	}
+}
+
+func TestRefreshCapsExpirationAtTTL(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	a := &auditor{ttl: testTTL, state: exemptions{"old": {FirstSeen: now, Expiration: now.Add(10 * testTTL)}}}
+
+	refresh(t.Context(), a, nil, now)
+
+	if got, want := a.state["old"].Expiration, now.Add(testTTL); !got.Equal(want) {
+		t.Errorf("expiration = %s, want %s", got, want)
 	}
 }

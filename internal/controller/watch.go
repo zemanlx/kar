@@ -314,6 +314,8 @@ func (r *Reconciler) noteViolation(ctx context.Context, w watched, source string
 // into a's state. It returns the denied object count per namespace, with cluster-scoped objects under "". A
 // namespace with violators keeps its exemption alive. The caller holds a.mu.
 func refresh(ctx context.Context, a *auditor, active []*gvrWatch, now time.Time) map[string]int {
+	// The cap precedes drain: a noted sighting can be later than now and keeps its own window.
+	a.state.capAt(now, a.ttl)
 	a.drain()
 
 	counts := map[string]int{}
@@ -331,8 +333,6 @@ func refresh(ctx context.Context, a *auditor, active []*gvrWatch, now time.Time)
 			}
 		}
 	}
-
-	a.state.capAt(now, a.ttl)
 
 	return counts
 }
