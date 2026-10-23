@@ -314,6 +314,8 @@ func (r *Reconciler) noteViolation(ctx context.Context, w watched, source string
 // into a's state. It returns the denied object count per namespace, with cluster-scoped objects under "". A
 // namespace with violators keeps its exemption alive. The caller holds a.mu.
 func refresh(ctx context.Context, a *auditor, active []*gvrWatch, now time.Time) map[string]int {
+	// The cap precedes drain: a noted sighting can be later than now and keeps its own window.
+	a.state.capAt(now, a.ttl)
 	a.drain()
 
 	counts := map[string]int{}
@@ -557,15 +559,15 @@ func (r *Reconciler) markDirty(match func(gvr schema.GroupVersionResource, w wat
 	}
 }
 
-// namespaceHandler queues a namespace whose labels change for reaudit, since a namespaceSelector or a
-// CEL expression that reads namespaceObject can flip a verdict without the object changing.
+// namespaceHandler queues a namespace whose labels or annotations change for reaudit, since a namespaceSelector
+// or a CEL expression that reads namespaceObject can flip a verdict without the object changing.
 func (r *Reconciler) namespaceHandler() handler.Funcs {
 	return handler.Funcs{
 		UpdateFunc: func(_ context.Context, e event.UpdateEvent, _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			oldNS, okOld := e.ObjectOld.(*corev1.Namespace)
 			newNS, okNew := e.ObjectNew.(*corev1.Namespace)
 
-			if !okOld || !okNew || maps.Equal(oldNS.Labels, newNS.Labels) {
+			if !okOld || !okNew || (maps.Equal(oldNS.Labels, newNS.Labels) && maps.Equal(oldNS.Annotations, newNS.Annotations)) {
 				return
 			}
 

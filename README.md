@@ -191,14 +191,14 @@ flowchart LR
    - Before the switch, a spec change to the policy or the source binding restarts the clock, since what the policy denies may have changed. So does deleting and recreating the policy or the source binding, or deleting the `PolicyExemption`. The restart waits for the replacement informers to sync, so `auto` does not switch on the old audit. Editing the `mode` or `ttl` annotation does not restart the clock, but a new TTL moves the deadline.
    - After the switch, `auto` stays enforcing: a later TTL or policy change does not turn it off.
    - `observe` keeps the clock too, so switching `observe` to `auto` counts the time already observed. `enforce` clears it, and switching `enforce` to `auto` keeps enforcing, also over a Deny binding written by a kar release without `auto`.
-6. **Expire.** The TTL slides: a namespace stays exempt until one TTL after kar last saw a violator in it. Once a minute kar refreshes the exemptions of namespaces that still have violators, from the in-memory index, and drops namespaces that have expired or been deleted. Then it updates the status and the Deny binding.
+6. **Expire.** The TTL slides: a namespace stays exempt until one TTL after kar last saw a violator in it. A shorter `kar.zeman.dev/ttl` takes effect at once: no exemption lasts longer than one new TTL from the change. Once a minute kar refreshes the exemptions of namespaces that still have violators, from the in-memory index, and drops namespaces that have expired or been deleted. Then it updates the status and the Deny binding.
 
 What makes kar re-evaluate:
 
 | Change | What kar does |
 | --- | --- |
 | An object is created, updated or deleted | Evaluates it as the event arrives. A new violator exempts its namespace at once, so short-lived objects are not missed. |
-| A namespace's labels change | Re-lists the watched resources in that namespace only, since a `namespaceSelector` or `namespaceObject` can flip a verdict. |
+| A namespace's labels or annotations change | Re-lists the watched resources in that namespace only, since a `namespaceSelector` or `namespaceObject` can flip a verdict. |
 | The policy, the source binding or the params it reads change | Starts a new informer for each affected resource and swaps it in once it has synced, so there is no gap. |
 
 Ownership and failure handling:
@@ -215,7 +215,7 @@ kar evaluates objects that already exist, so there is no real admission request 
 | CEL input | Value in the audit |
 | --- | --- |
 | `object` | the object as stored |
-| `namespaceObject` | the object's Namespace, with its current labels |
+| `namespaceObject` | the object's Namespace, with its current labels and annotations |
 | `params` | resolved from the source binding's `paramRef`, as the API server does |
 | `request.name`, `request.namespace`, `request.kind`, `request.resource` | taken from the object |
 | `variables` | evaluated from the above |
@@ -229,10 +229,11 @@ Some inputs exist only in a real request. kar does not fake them, because a poli
 | `oldObject` | Only UPDATE and DELETE have one; an existing object has no "before". |
 | `request.operation` | The audit is always CREATE; real requests can be UPDATE or DELETE. |
 | `request.dryRun` | Only a real request has it. |
-
+| `request.options` | The request's options, such as `dryRun` and `fieldManager`; only a real request has them. |
 A policy is not auditable when:
 
 - `matchConstraints` does not match CREATE, or
+- a resource rule of `matchConstraints` or of the binding's `matchResources` matches UPDATE but not CREATE, or an excluded rule excludes CREATE but not UPDATE, since kar would find no violators that enforcement then denies on update, or
 - any validation `expression` or `messageExpression`, `auditAnnotations` value, `matchConditions` expression or `variables` expression reads one of the inputs above, or
 - such an expression uses `request` other than by naming a field (for example `cel.bind(r, request, ...)` or a computed key), since kar then cannot tell which fields it reads, or
 - such an expression cannot be parsed, or
@@ -277,7 +278,7 @@ Binary flags (the chart sets `--leader-elect` and `--default-ttl`):
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--default-ttl` | `192h` | Exemption TTL when a binding sets no `kar.zeman.dev/ttl` |
+| `--default-ttl` | `192h` | Exemption TTL when a binding sets no `kar.zeman.dev/ttl`. Must be positive (kar exits otherwise) |
 | `--metrics-bind-address` | `:8080` | Prometheus metrics listen address |
 | `--health-probe-bind-address` | `:8081` | Health and readiness probe listen address |
 | `--leader-elect` | `false` | Only one replica reconciles; the chart always enables this |
@@ -405,7 +406,7 @@ Each ramp below grows one dimension until a step breaks its budget. The budget i
 | Bindings over the same objects | 50 to 350 | 300: converge in 27.6s, 97 MiB heap; 350 take over 30s. Time grows faster than linearly (10.3s at 200) |
 | Change rate (updates of violating objects) | 800, 1,600 updates/s | at least 800: a new violation is still recorded in 0.2s. Above that the test client tops out at about 1,100 updates/s, so kar's limit is unknown |
 
-A new or changed object is evaluated as its watch event arrives, so a new violation is recorded within seconds. A namespace label change makes kar re-list the watched resources in that namespace only, so objects it brings into (or out of) a policy's scope are re-evaluated within seconds.
+A new or changed object is evaluated as its watch event arrives, so a new violation is recorded within seconds. A namespace label or annotation change makes kar re-list the watched resources in that namespace only, so objects it brings into (or out of) a policy's scope are re-evaluated within seconds.
 
 ## Uninstall
 

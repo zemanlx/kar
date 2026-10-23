@@ -8,6 +8,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/zemanlx/kat/evaluator"
 )
 
 // matchRules matches pods with the given operations.
@@ -15,6 +17,11 @@ func matchRules(ops ...admissionregv1.OperationType) *admissionregv1.MatchResour
 	return &admissionregv1.MatchResources{ResourceRules: []admissionregv1.NamedRuleWithOperations{{
 		Operations: ops, APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"pods"},
 	}}}
+}
+
+// coreRule matches resource in the core group at v1 for the given operations.
+func coreRule(resource string, ops ...admissionregv1.OperationType) admissionregv1.NamedRuleWithOperations {
+	return admissionregv1.NamedRuleWithOperations{Operations: ops, APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{resource}}
 }
 
 func TestAuditIssues(t *testing.T) {
@@ -32,6 +39,11 @@ func TestAuditIssues(t *testing.T) {
 		{name: "wildcard operation", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: matchRules(admissionregv1.OperationAll)}},
 		{name: "update only", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: matchRules(admissionregv1.Update)}, want: bad},
 		{name: "no match constraints", want: bad},
+		{name: "update-only rule beside a create rule", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: &admissionregv1.MatchResources{ResourceRules: []admissionregv1.NamedRuleWithOperations{coreRule("pods", admissionregv1.Create), coreRule("configmaps", admissionregv1.Update)}}}, want: []string{"matchConstraints.resourceRules[1] matches UPDATE but not CREATE"}},
+		{name: "exclude create but not update", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: &admissionregv1.MatchResources{ResourceRules: []admissionregv1.NamedRuleWithOperations{coreRule("pods", admissionregv1.Create, admissionregv1.Update)}, ExcludeResourceRules: []admissionregv1.NamedRuleWithOperations{coreRule("pods", admissionregv1.Create)}}}, want: []string{"matchConstraints.excludeResourceRules[0] excludes CREATE but not UPDATE"}},
+		{name: "exclude create and update", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: &admissionregv1.MatchResources{ResourceRules: []admissionregv1.NamedRuleWithOperations{coreRule("pods", admissionregv1.Create, admissionregv1.Update)}, ExcludeResourceRules: []admissionregv1.NamedRuleWithOperations{coreRule("pods", admissionregv1.Create, admissionregv1.Update)}}}},
+		{name: "exclude update only", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: &admissionregv1.MatchResources{ResourceRules: []admissionregv1.NamedRuleWithOperations{coreRule("pods", admissionregv1.Create, admissionregv1.Update)}, ExcludeResourceRules: []admissionregv1.NamedRuleWithOperations{coreRule("pods", admissionregv1.Update)}}}},
+		{name: "create rule beside a delete rule", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: &admissionregv1.MatchResources{ResourceRules: []admissionregv1.NamedRuleWithOperations{coreRule("pods", admissionregv1.Create), coreRule("configmaps", admissionregv1.Delete)}}}},
 		{name: "unparsable expression fails closed", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "object.("}}}, want: []string{"validations[0].expression cannot be checked: ERROR: <input>:1:8: Syntax error: no viable alternative at input '.('\n | object.(\n | .......^"}},
 	}
 
@@ -74,6 +86,9 @@ func TestAuditReads(t *testing.T) {
 		{name: "request bound to a name", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "cel.bind(r, request, r.userInfo.username == 'x')"}}}, want: []string{"validations[0].expression reads request"}},
 		{name: "request in a list", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "[request].all(r, r.userInfo.username != 'x')"}}}, want: []string{"validations[0].expression reads request"}},
 		{name: "index on request with a computed key", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "request['user' + 'Info'].username == 'x'"}}}, want: []string{"validations[0].expression reads request"}},
+		{name: "request.options.dryRun in a validation", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "!request.options.dryRun"}}}, want: []string{"validations[0].expression reads request.options"}},
+		{name: "has on request.options.fieldManager", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "has(request.options.fieldManager)"}}}, want: []string{"validations[0].expression reads request.options"}},
+		{name: "index on request.options", spec: admissionregv1.ValidatingAdmissionPolicySpec{MatchConstraints: createRules, Validations: []admissionregv1.Validation{{Expression: "request['options'].fieldManager == 'kubectl'"}}}, want: []string{"validations[0].expression reads request.options"}},
 	}
 
 	for _, tt := range tests {
@@ -83,6 +98,62 @@ func TestAuditReads(t *testing.T) {
 			got := auditIssues(&admissionregv1.ValidatingAdmissionPolicy{Spec: tt.spec})
 			if !slices.Equal(got, tt.want) {
 				t.Errorf("auditIssues() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCompileBindingMatchResources checks that the audit reads the source binding's matchResources, since the
+// binding decides which requests the policy sees. A binding rule that matches UPDATE but not CREATE leaves the
+// audit nothing to evaluate.
+func TestCompileBindingMatchResources(t *testing.T) {
+	t.Parallel()
+
+	policy := &admissionregv1.ValidatingAdmissionPolicy{
+		Name: "require-owner",
+		Spec: admissionregv1.ValidatingAdmissionPolicySpec{
+			MatchConstraints: matchRules(admissionregv1.Create, admissionregv1.Update),
+			Validations:      []admissionregv1.Validation{{Expression: "object.metadata.name != ''"}},
+		},
+	}
+
+	tests := []struct {
+		name           string
+		matchResources *admissionregv1.MatchResources
+		want           []string
+	}{
+		{name: "update-only resource rule", matchResources: &admissionregv1.MatchResources{ResourceRules: []admissionregv1.NamedRuleWithOperations{coreRule("pods", admissionregv1.Update)}}, want: []string{"binding matchResources.resourceRules[0] matches UPDATE but not CREATE"}},
+		{name: "exclude create but not update", matchResources: &admissionregv1.MatchResources{ExcludeResourceRules: []admissionregv1.NamedRuleWithOperations{coreRule("pods", admissionregv1.Create)}}, want: []string{"binding matchResources.excludeResourceRules[0] excludes CREATE but not UPDATE"}},
+		{name: "no match resources"},
+		{name: "namespace selector only", matchResources: &admissionregv1.MatchResources{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kar-test": "fixture"}}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ev, err := evaluator.New()
+			if err != nil {
+				t.Fatalf("create evaluator: %v", err)
+			}
+
+			r := &Reconciler{Evaluator: ev}
+			source := &admissionregv1.ValidatingAdmissionPolicyBinding{
+				Name: "require-owner",
+				Spec: admissionregv1.ValidatingAdmissionPolicyBindingSpec{
+					PolicyName:        "require-owner",
+					ValidationActions: []admissionregv1.ValidationAction{admissionregv1.Warn},
+					MatchResources:    tt.matchResources,
+				},
+			}
+
+			_, got, err := r.compile(policy, source)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("compile() issues = %q, want %q", got, tt.want)
 			}
 		})
 	}

@@ -1678,6 +1678,62 @@ func TestRelabelRecordsExistingViolator(t *testing.T) {
 	}
 }
 
+// TestAnnotationChangeRecordsExistingViolator changes a namespace annotation that the policy reads. The labels
+// stay the same, so nothing re-audits the ConfigMap that already exists in the namespace.
+func TestAnnotationChangeRecordsExistingViolator(t *testing.T) {
+	t.Parallel()
+
+	c := startEnv(t)
+	ctx := t.Context()
+
+	fixture := violatingFixture(map[string]string{modeAnnotation: modeObserve})
+	policy, okPolicy := fixture[2].(*admissionregv1.ValidatingAdmissionPolicy)
+	binding, okBinding := fixture[3].(*admissionregv1.ValidatingAdmissionPolicyBinding)
+
+	if !okPolicy || !okBinding {
+		t.Fatal("violatingFixture no longer has a policy and binding at 2 and 3")
+	}
+
+	policy.Spec.Validations[0].Expression = `!(has(namespaceObject.metadata.annotations) && 'kar-test/strict' in namespaceObject.metadata.annotations) || (has(object.metadata.labels) && 'owner' in object.metadata.labels)`
+
+	// The namespace and ConfigMap go in first, so the first pass evaluates the ConfigMap before the annotation exists.
+	createAll(t, c, []client.Object{fixtureNS("anno"), violation("anno"), policy, binding})
+
+	eventually(t, time.Minute, func() error {
+		pe := &karv1alpha1.PolicyExemption{}
+		if err := c.Get(ctx, client.ObjectKey{Name: sourceName}, pe); err != nil {
+			return fmt.Errorf("get exemption: %w", err)
+		}
+
+		if !meta.IsStatusConditionTrue(pe.Status.Conditions, karv1alpha1.ConditionSynced) {
+			return fmt.Errorf("%w: conditions %+v, want Synced True", errMismatch, pe.Status.Conditions)
+		}
+
+		return nil
+	})
+
+	if recordedAll(ctx, c, []string{"anno"}) == nil {
+		t.Fatal("anno exempt before its annotation changed")
+	}
+
+	ns := &corev1.Namespace{}
+	if err := c.Get(ctx, client.ObjectKey{Name: "anno"}, ns); err != nil {
+		t.Fatalf("get namespace: %v", err)
+	}
+
+	if ns.Annotations == nil {
+		ns.Annotations = map[string]string{}
+	}
+
+	ns.Annotations["kar-test/strict"] = "true"
+
+	if err := c.Update(ctx, ns); err != nil {
+		t.Fatalf("annotate namespace: %v", err)
+	}
+
+	eventually(t, 20*time.Second, func() error { return recordedAll(ctx, c, []string{"anno"}) })
+}
+
 // TestPolicyChangeReevaluates reads the package-level informer restart counter, so it must not run in parallel.
 //
 //nolint:paralleltest // reads the global informer restart counter

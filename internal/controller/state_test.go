@@ -81,6 +81,43 @@ func TestExemptionsSee(t *testing.T) {
 	}
 }
 
+func TestExemptionsCapAt(t *testing.T) {
+	t.Parallel()
+
+	t0 := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	now := t0.Add(time.Hour)
+
+	tests := []struct {
+		name  string
+		start entry
+		want  entry
+	}{
+		{
+			name:  "lowers expiration past now plus ttl",
+			start: entry{FirstSeen: t0, Expiration: t0.Add(10 * testTTL)},
+			want:  entry{FirstSeen: t0, Expiration: now.Add(testTTL)},
+		},
+		{
+			name:  "keeps expiration before now plus ttl",
+			start: entry{FirstSeen: t0, Expiration: t0.Add(testTTL)},
+			want:  entry{FirstSeen: t0, Expiration: t0.Add(testTTL)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			e := exemptions{"a": tt.start}
+			e.capAt(now, testTTL)
+
+			if !sameExemptions(e, exemptions{"a": tt.want}) {
+				t.Errorf("state = %+v, want %+v", e, tt.want)
+			}
+		})
+	}
+}
+
 func TestExemptionsExpire(t *testing.T) {
 	t.Parallel()
 
@@ -194,10 +231,16 @@ func TestToStatusAndNeedsWrite(t *testing.T) {
 		{name: "same state", persisted: persisted, want: false},
 		{name: "expiration moved under the step", persisted: shifted(-time.Hour+time.Minute, "a"), want: false},
 		{name: "expiration moved past the step", persisted: shifted(-time.Hour, "a"), want: true},
+		{name: "expiration cut by the step", persisted: shifted(statusStep, "a"), want: true},
+		{name: "expiration cut under a second", persisted: shifted(500*time.Millisecond, "a"), want: false},
+		{name: "expiration cut by two seconds", persisted: shifted(2*time.Second, "a"), want: true},
+		{name: "status truncated to whole seconds", persisted: shifted(-500*time.Millisecond, "a"), want: false},
 		{name: "namespace missing from status", persisted: persisted[:1], want: true},
 		{name: "namespace not yet exempt", persisted: append(slices.Clone(persisted), karv1alpha1.ExemptNamespace{Name: "c", Expiration: metav1.NewTime(t0)}), want: true},
 		{name: "short TTL: expiration moved under the TTL", persisted: shifted(-time.Minute, "a"), ttl: 2 * time.Minute, want: false},
 		{name: "short TTL: expiration moved by the TTL", persisted: shifted(-2*time.Minute, "a"), ttl: 2 * time.Minute, want: true},
+		{name: "short TTL: expiration cut by the TTL", persisted: shifted(2*time.Minute, "a"), ttl: 2 * time.Minute, want: true},
+		{name: "expiration cut by 30m under a 90m TTL", persisted: shifted(30*time.Minute, "a"), ttl: 90 * time.Minute, want: true},
 	}
 
 	for _, tt := range tests {
@@ -314,5 +357,32 @@ func TestPassClock(t *testing.T) {
 				t.Errorf("clock() = (%s, %q), want (%s, %q)", gotSince, p.pe.Status.ObservedInputs, tt.wantSince, tt.wantInputs)
 			}
 		})
+	}
+}
+
+func TestRefreshKeepsLaterSighting(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	seen := now.Add(5 * time.Second)
+	a := &auditor{ttl: testTTL, state: exemptions{}, pending: map[string]time.Time{"ns": seen}}
+
+	refresh(t.Context(), a, nil, now)
+
+	if got, want := a.state["ns"].Expiration, seen.Add(testTTL); !got.Equal(want) {
+		t.Errorf("expiration = %s, want %s", got, want)
+	}
+}
+
+func TestRefreshCapsExpirationAtTTL(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	a := &auditor{ttl: testTTL, state: exemptions{"old": {FirstSeen: now, Expiration: now.Add(10 * testTTL)}}}
+
+	refresh(t.Context(), a, nil, now)
+
+	if got, want := a.state["old"].Expiration, now.Add(testTTL); !got.Equal(want) {
+		t.Errorf("expiration = %s, want %s", got, want)
 	}
 }

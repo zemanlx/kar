@@ -33,6 +33,8 @@ import (
 
 const defaultTTL = 192 * time.Hour // 8 days
 
+var errNonPositiveTTL = errors.New("must be positive")
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -66,11 +68,11 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 		return fmt.Errorf("parse flags: %w", err)
 	}
 
-	ctrl.SetLogger(logr.FromSlogHandler(slog.NewJSONHandler(stderr, nil)))
+	if ttl <= 0 {
+		return fmt.Errorf("--default-ttl %v %w", ttl, errNonPositiveTTL)
+	}
 
-	scheme := runtime.NewScheme()
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(karv1alpha1.AddToScheme(scheme))
+	ctrl.SetLogger(logr.FromSlogHandler(slog.NewJSONHandler(stderr, nil)))
 
 	cfg, err := ctrl.GetConfig()
 	if err != nil {
@@ -78,7 +80,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:                 scheme,
+		Scheme:                 newScheme(),
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         leaderElect,
@@ -103,6 +105,15 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 
 	return nil
+}
+
+// newScheme returns a scheme with the built-in and kar types.
+func newScheme() *runtime.Scheme {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(karv1alpha1.AddToScheme(scheme))
+
+	return scheme
 }
 
 // setup registers the audit controller and the health probes with mgr.

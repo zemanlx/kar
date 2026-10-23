@@ -21,9 +21,9 @@ var celEnv = environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion(
 // auditIssues returns why evaluating existing objects as CREATE cannot give the server's answer
 // for policy, or nil when the audit is sound.
 func auditIssues(policy *admissionregv1.ValidatingAdmissionPolicy) []string {
-	var issues []string
-	if !matchesCreate(policy.Spec.MatchConstraints) {
-		issues = append(issues, "matchConstraints does not match CREATE")
+	issues := []string{"matchConstraints does not match CREATE"}
+	if matchesCreate(policy.Spec.MatchConstraints) {
+		issues = matchIssues("matchConstraints", policy.Spec.MatchConstraints)
 	}
 
 	spec := &policy.Spec
@@ -60,10 +60,38 @@ func matchesCreate(mc *admissionregv1.MatchResources) bool {
 	}
 
 	return slices.ContainsFunc(mc.ResourceRules, func(r admissionregv1.NamedRuleWithOperations) bool {
-		return slices.ContainsFunc(r.Operations, func(op admissionregv1.OperationType) bool {
-			return op == admissionregv1.Create || op == admissionregv1.OperationAll
-		})
+		return hasOp(r.Operations, admissionregv1.Create)
 	})
+}
+
+// matchIssues returns why the audit's CREATE misses requests that admission matches on UPDATE, for the match
+// constraints in mr. A resource rule that matches UPDATE must match CREATE, and an excluded rule that matches
+// CREATE must match UPDATE. A nil mr has no issues.
+func matchIssues(prefix string, mr *admissionregv1.MatchResources) []string {
+	if mr == nil {
+		return nil
+	}
+
+	var issues []string
+
+	for i, r := range mr.ResourceRules {
+		if hasOp(r.Operations, admissionregv1.Update) && !hasOp(r.Operations, admissionregv1.Create) {
+			issues = append(issues, fmt.Sprintf("%s.resourceRules[%d] matches UPDATE but not CREATE", prefix, i))
+		}
+	}
+
+	for i, r := range mr.ExcludeResourceRules {
+		if hasOp(r.Operations, admissionregv1.Create) && !hasOp(r.Operations, admissionregv1.Update) {
+			issues = append(issues, fmt.Sprintf("%s.excludeResourceRules[%d] excludes CREATE but not UPDATE", prefix, i))
+		}
+	}
+
+	return issues
+}
+
+// hasOp reports whether ops includes op. OperationAll includes every operation.
+func hasOp(ops []admissionregv1.OperationType, op admissionregv1.OperationType) bool {
+	return slices.Contains(ops, op) || slices.Contains(ops, admissionregv1.OperationAll)
 }
 
 // readsIssues returns one issue per distinct name expr reads that the audit cannot supply. An expr
@@ -122,8 +150,8 @@ func (r *reads) visit(e ast.Expr) {
 
 	r.selected[operand.ID()] = true
 
-	// The audit's request is fixed: user, operation, and dryRun differ from a real admission.
-	if slices.Contains([]string{"userInfo", "operation", "dryRun"}, name) {
+	// The audit's request is fixed: user, operation, dryRun, and options differ from a real admission.
+	if slices.Contains([]string{"userInfo", "operation", "dryRun", "options"}, name) {
 		r.add("request." + name)
 	}
 }
