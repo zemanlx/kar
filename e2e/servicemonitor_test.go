@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,12 +28,7 @@ func TestServiceMonitor(t *testing.T) {
 	sm := &unstructured.Unstructured{}
 	sm.SetGroupVersionKind(schema.GroupVersionKind{Group: "monitoring.coreos.com", Version: "v1", Kind: "ServiceMonitor"})
 
-	err := kube.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: karName}, sm)
-	if apierrors.IsNotFound(err) {
-		t.Skip("chart has no ServiceMonitor; the release predates it")
-	}
-
-	if err != nil {
+	if err := kube.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: karName}, sm); err != nil {
 		t.Fatalf("get ServiceMonitor: %v", err)
 	}
 
