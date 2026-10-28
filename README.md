@@ -273,6 +273,8 @@ Chart values (`charts/kar/values.yaml`):
 | `rbac.create` | `true` | Create the ClusterRole. `false` only creates the binding |
 | `rbac.clusterRoleName` | release name | ClusterRole to bind. Required when `rbac.create` is false |
 | `rbac.rules` | get/list/watch on every resource | Replaces that read rule. The write rules stay |
+| `metrics.serviceMonitor.enabled` | `false` | Create a Service and a ServiceMonitor for port 8080 |
+| `metrics.serviceMonitor.labels` | `{}` | Extra labels on the ServiceMonitor, for the agent's selector |
 
 Binary flags (the chart sets `--leader-elect` and `--default-ttl`):
 
@@ -310,6 +312,8 @@ Metrics are served on port 8080:
 | `kar_violations` | `binding`, `namespace` | Existing objects the source binding's policy denies (`namespace=""` for cluster-scoped) |
 | `kar_exempt_namespaces` | `binding` | Namespaces currently exempted |
 | `kar_informer_restarts_total` | `resource` | Informers replaced to re-evaluate a watched resource |
+
+Set `metrics.serviceMonitor.enabled=true` to have the chart create a Service on port 8080 and a Prometheus `ServiceMonitor` for it; this needs the `monitoring.coreos.com` CRD. The ServiceMonitor sets `honorLabels: true` so `kar_violations`'s `namespace` label stays the violating namespace, and `jobLabel` so the series `job` is `kar`.
 
 Also useful for [Sizing](#sizing): `process_resident_memory_bytes` and `go_memstats_heap_inuse_bytes`.
 
@@ -451,7 +455,7 @@ KUBEBUILDER_ASSETS=<envtest binaries> go test -tags load -timeout 90m \
   -load.objects.max=520000 -load.policies.step=240 -load.policies.max=240
 ```
 
-End-to-end tests run on a kind cluster with `hack/e2e.sh`. It needs docker, helm and Go. The script installs pinned kind v0.33.0 into `bin/`, builds the image, creates a kind cluster with 3 workers, installs the chart into a Pod Security `restricted` namespace, and runs the e2e suite (about 2 minutes after the cluster is up).
+End-to-end tests run on a kind cluster with `hack/e2e.sh`. It needs docker, helm and Go. The script installs pinned kind v0.33.0 into `bin/`, builds the image, creates a kind cluster with 3 workers, installs the chart into a Pod Security `restricted` namespace, and runs the e2e suite (about 2 minutes after the cluster is up). It also installs a pinned kube-prometheus-stack, trimmed to the Prometheus Operator and Prometheus, that scrapes kar through the chart's ServiceMonitor.
 
 ```bash
 hack/e2e.sh
