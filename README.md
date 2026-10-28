@@ -105,7 +105,7 @@ status:
     status: "True"
     type: Synced
   - lastTransitionTime: "2026-10-21T09:00:00Z"
-    message: 'auto: enforcing after 2026-10-29T09:00:00Z'
+    message: enforcing after 2026-10-29T09:00:00Z
     reason: Observe
     status: "False"
     type: Enforcing
