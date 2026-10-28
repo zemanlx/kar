@@ -116,6 +116,16 @@ func (a *auditor) snapshot() {
 	}
 }
 
+// namedSource is a watch whose startup log uses name. controller-runtime records String()
+// in the "source" field, and its channel source prints only a pointer.
+type namedSource struct {
+	ctrlsource.Source
+
+	name string
+}
+
+func (s namedSource) String() string { return s.name }
+
 // SetupWithManager registers the controller. Call it once.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	d, err := dynamic.NewForConfig(mgr.GetConfig())
@@ -149,7 +159,10 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		})).
 		Watches(&admissionregv1.ValidatingAdmissionPolicy{}, handler.EnqueueRequestsFromMapFunc(r.sourcesOf)).
 		Watches(&corev1.Namespace{}, r.namespaceHandler()).
-		WatchesRawSource(ctrlsource.Channel(r.events, &handler.EnqueueRequestForObject{})).
+		WatchesRawSource(namedSource{
+			Source: ctrlsource.Channel(r.events, &handler.EnqueueRequestForObject{}),
+			name:   "events",
+		}).
 		Complete(r); err != nil {
 		return fmt.Errorf("register controller: %w", err)
 	}
@@ -260,7 +273,7 @@ func (r *Reconciler) sync(ctx context.Context, source *admissionregv1.Validating
 			return ctrl.Result{}, errors.Join(err, p.save(ctx))
 		}
 
-		setCondition(pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "observe mode: no derived binding")
+		setCondition(pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "observing, with no derived binding")
 	}
 
 	c, res, err := p.check(ctx)
@@ -457,7 +470,7 @@ func (p *pass) dropObsolete(ctx context.Context, policy *admissionregv1.Validati
 		return err
 	}
 
-	setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "auto: the observation window has not started")
+	setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "the observation window has not started")
 
 	return p.r.deleteIfExists(ctx, derived)
 }
@@ -567,15 +580,17 @@ func (p *pass) bindAndReport(ctx context.Context, uid types.UID, exempt []string
 		return ctrl.Result{}, errors.Join(err, p.save(ctx))
 	}
 
+	// Messages stay free of ": ". kubectl quotes a condition message that contains a colon
+	// followed by a space and leaves the others plain.
 	switch {
 	case eff == modeEnforce:
 		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionTrue, karv1alpha1.ReasonEnforcing, "the derived binding exempts the listed namespaces")
 	case mode(p.source) == modeAuto && p.pe.Status.ObservingSince == nil:
-		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "auto: the observation window has not started")
+		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "the observation window has not started")
 	case mode(p.source) == modeAuto:
-		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "auto: enforcing after "+deadline.UTC().Format(time.RFC3339))
+		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "enforcing after "+deadline.UTC().Format(time.RFC3339))
 	default:
-		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "observe mode: no derived binding")
+		setCondition(p.pe, karv1alpha1.ConditionEnforcing, metav1.ConditionFalse, karv1alpha1.ReasonObserve, "observing, with no derived binding")
 	}
 
 	return ctrl.Result{RequeueAfter: resync}, p.save(ctx)
