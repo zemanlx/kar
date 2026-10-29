@@ -14,8 +14,4 @@ resources:          # 100k Pods / 4000 namespaces peaked at 234 MiB RSS; see REA
     memory: 512Mi
   limits:
     memory: 512Mi
-metrics:
-  serviceMonitor:
-    enabled: false   # creates a Service on port 8080 and a ServiceMonitor; needs the monitoring.coreos.com CRD
-    labels: {}       # extra labels on the ServiceMonitor, for a Prometheus or VMAgent selector
-extraObjects: []      # extra manifests; strings or maps, rendered with tpl
+extraObjects: []    # extra manifests; strings or maps, rendered with tpl
