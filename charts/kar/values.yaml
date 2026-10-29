@@ -18,3 +18,4 @@ metrics:
   serviceMonitor:
     enabled: false   # creates a Service on port 8080 and a ServiceMonitor; needs the monitoring.coreos.com CRD
     labels: {}       # extra labels on the ServiceMonitor, for a Prometheus or VMAgent selector
+extraObjects: []      # extra manifests; strings or maps, rendered with tpl

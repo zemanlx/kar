@@ -24,14 +24,14 @@ Every supported minor is checked in CI (see [Testing](#testing)).
 ## Install
 
 ```bash
-helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.2.1 -n kar-system --create-namespace
+helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.2.2 -n kar-system --create-namespace
 ```
 
 The image `ghcr.io/zemanlx/kar` is built for `linux/amd64` and `linux/arm64`. The image and the chart carry GitHub build provenance attestations:
 
 ```bash
-gh attestation verify oci://ghcr.io/zemanlx/kar:0.2.1 --owner zemanlx
-gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.2.1 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/kar:0.2.2 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.2.2 --owner zemanlx
 ```
 
 The ClusterRole grants get/list/watch on every resource, Secrets included, because the audit reads whatever a policy matches. To grant less, set `rbac.rules`, or set `rbac.create: false` and bind a ClusterRole you already have. See [Configuration](#configuration).
@@ -275,6 +275,28 @@ Chart values (`charts/kar/values.yaml`):
 | `rbac.rules` | get/list/watch on every resource | Replaces that read rule. The write rules stay |
 | `metrics.serviceMonitor.enabled` | `false` | Create a Service and a ServiceMonitor for port 8080 |
 | `metrics.serviceMonitor.labels` | `{}` | Extra labels on the ServiceMonitor, for the agent's selector |
+| `extraObjects` | `[]` | Extra manifests to render with the chart. Each item is a map or a string; both go through `tpl`, so they can use the chart's helpers and `.Capabilities` |
+
+A string item can be gated on an API, for example a VictoriaMetrics scrape (keep `honorLabels: true` so `kar_violations` keeps its `namespace` label):
+
+```yaml
+extraObjects:
+  - |
+    {{- if .Capabilities.APIVersions.Has "operator.victoriametrics.com/v1beta1/VMPodScrape" }}
+    apiVersion: operator.victoriametrics.com/v1beta1
+    kind: VMPodScrape
+    metadata:
+      name: {{ include "kar.fullname" . }}
+      namespace: {{ .Release.Namespace }}
+    spec:
+      selector:
+        matchLabels:
+          {{- include "kar.selectorLabels" . | nindent 6 }}
+      podMetricsEndpoints:
+        - port: metrics
+          honorLabels: true
+    {{- end }}
+```
 
 Binary flags (the chart sets `--leader-elect` and `--default-ttl`):
 
@@ -462,7 +484,7 @@ hack/e2e.sh
 ```
 
 - `K8S_VERSION=1.36|1.37` (default `1.37`) picks the node image.
-- `KAR_VERSION=0.2.1` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that. Charts up to 0.2.0 have no ServiceMonitor; add `-test.skip=TestServiceMonitor`.
+- `KAR_VERSION=0.2.2` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that. Charts up to 0.2.0 have no ServiceMonitor; add `-test.skip=TestServiceMonitor`.
 - `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
 - Extra arguments go to the test binary, e.g. `hack/e2e.sh -test.run=TestHardening`.
 
