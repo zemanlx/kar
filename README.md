@@ -24,14 +24,14 @@ Every supported minor is checked in CI (see [Testing](#testing)).
 ## Install
 
 ```bash
-helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.2.1 -n kar-system --create-namespace
+helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.2.2 -n kar-system --create-namespace
 ```
 
 The image `ghcr.io/zemanlx/kar` is built for `linux/amd64` and `linux/arm64`. The image and the chart carry GitHub build provenance attestations:
 
 ```bash
-gh attestation verify oci://ghcr.io/zemanlx/kar:0.2.1 --owner zemanlx
-gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.2.1 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/kar:0.2.2 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.2.2 --owner zemanlx
 ```
 
 The ClusterRole grants get/list/watch on every resource, Secrets included, because the audit reads whatever a policy matches. To grant less, set `rbac.rules`, or set `rbac.create: false` and bind a ClusterRole you already have. See [Configuration](#configuration).
@@ -273,8 +273,28 @@ Chart values (`charts/kar/values.yaml`):
 | `rbac.create` | `true` | Create the ClusterRole. `false` only creates the binding |
 | `rbac.clusterRoleName` | release name | ClusterRole to bind. Required when `rbac.create` is false |
 | `rbac.rules` | get/list/watch on every resource | Replaces that read rule. The write rules stay |
-| `metrics.serviceMonitor.enabled` | `false` | Create a Service and a ServiceMonitor for port 8080 |
-| `metrics.serviceMonitor.labels` | `{}` | Extra labels on the ServiceMonitor, for the agent's selector |
+| `extraObjects` | `[]` | Extra manifests to render with the chart. Each item is a map or a string; both go through `tpl`, so they can use the chart's helpers and `.Capabilities` |
+
+A string item can be gated on an API, for example a VictoriaMetrics scrape (keep `honorLabels: true` so `kar_violations` keeps its `namespace` label):
+
+```yaml
+extraObjects:
+  - |
+    {{- if .Capabilities.APIVersions.Has "operator.victoriametrics.com/v1beta1/VMPodScrape" }}
+    apiVersion: operator.victoriametrics.com/v1beta1
+    kind: VMPodScrape
+    metadata:
+      name: {{ include "kar.fullname" . }}
+      namespace: {{ .Release.Namespace }}
+    spec:
+      selector:
+        matchLabels:
+          {{- include "kar.selectorLabels" . | nindent 6 }}
+      podMetricsEndpoints:
+        - port: metrics
+          honorLabels: true
+    {{- end }}
+```
 
 Binary flags (the chart sets `--leader-elect` and `--default-ttl`):
 
@@ -313,7 +333,7 @@ Metrics are served on port 8080:
 | `kar_exempt_namespaces` | `binding` | Namespaces currently exempted |
 | `kar_informer_restarts_total` | `resource` | Informers replaced to re-evaluate a watched resource |
 
-Set `metrics.serviceMonitor.enabled=true` to have the chart create a Service on port 8080 and a Prometheus `ServiceMonitor` for it; this needs the `monitoring.coreos.com` CRD. The ServiceMonitor sets `honorLabels: true` so `kar_violations`'s `namespace` label stays the violating namespace, and `jobLabel` so the series `job` is `kar`.
+The chart does not create a scrape object. Add one for your agent with `extraObjects` (see [Configuration](#configuration)) and set `honorLabels: true`, or the scrape's own `namespace` label replaces `kar_violations`'s violating namespace.
 
 Also useful for [Sizing](#sizing): `process_resident_memory_bytes` and `go_memstats_heap_inuse_bytes`.
 
@@ -455,15 +475,13 @@ KUBEBUILDER_ASSETS=<envtest binaries> go test -tags load -timeout 90m \
   -load.objects.max=520000 -load.policies.step=240 -load.policies.max=240
 ```
 
-End-to-end tests run on a kind cluster with `hack/e2e.sh`. It needs docker, helm and Go. The script installs pinned kind v0.33.0 into `bin/`, builds the image, creates a kind cluster with 3 workers, installs the chart into a Pod Security `restricted` namespace, and runs the e2e suite (about 2 minutes after the cluster is up). It also installs a pinned kube-prometheus-stack, trimmed to the Prometheus Operator and Prometheus, that scrapes kar through the chart's ServiceMonitor.
-
+End-to-end tests run on a kind cluster with `hack/e2e.sh`. It needs docker, helm and Go. The script installs pinned kind v0.33.0 into `bin/`, builds the image, creates a kind cluster with 3 workers, installs the chart into a Pod Security `restricted` namespace, and runs the e2e suite (about 2 minutes after the cluster is up).
 ```bash
 hack/e2e.sh
 ```
 
 - `K8S_VERSION=1.36|1.37` (default `1.37`) picks the node image.
-- `KAR_VERSION=0.2.1` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that. Charts up to 0.2.0 have no ServiceMonitor; add `-test.skip=TestServiceMonitor`.
-- `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
+- `KAR_VERSION=0.2.2` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.- `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
 - Extra arguments go to the test binary, e.g. `hack/e2e.sh -test.run=TestHardening`.
 
 Logs land in `bin/e2e-logs/`. kubectl, helm and the tests run in a container on the kind Docker network, because VPN clients can drop the host's route to Docker networks.
