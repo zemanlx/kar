@@ -399,7 +399,7 @@ func (p *pass) publish(ctx context.Context, c *checked) (ctrl.Result, error) {
 	a.snapshot()
 	a.mu.Unlock()
 
-	recordPass(p.source.Name, counts, len(a.state))
+	recordPass(p.source.Name, counts, a.state)
 
 	latched, err := p.latched(ctx, c.policy)
 	if err != nil {

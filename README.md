@@ -24,14 +24,14 @@ Every supported minor is checked in CI (see [Testing](#testing)).
 ## Install
 
 ```bash
-helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.2.2 -n kar-system --create-namespace
+helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.2.3 -n kar-system --create-namespace
 ```
 
 The image `ghcr.io/zemanlx/kar` is built for `linux/amd64` and `linux/arm64`. The image and the chart carry GitHub build provenance attestations:
 
 ```bash
-gh attestation verify oci://ghcr.io/zemanlx/kar:0.2.2 --owner zemanlx
-gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.2.2 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/kar:0.2.3 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.2.3 --owner zemanlx
 ```
 
 The ClusterRole grants get/list/watch on every resource, Secrets included, because the audit reads whatever a policy matches. To grant less, set `rbac.rules`, or set `rbac.create: false` and bind a ClusterRole you already have. See [Configuration](#configuration).
@@ -331,9 +331,17 @@ Metrics are served on port 8080:
 | --- | --- | --- |
 | `kar_violations` | `binding`, `namespace` | Existing objects the source binding's policy denies (`namespace=""` for cluster-scoped) |
 | `kar_exempt_namespaces` | `binding` | Namespaces currently exempted |
+| `kar_exemption_expiry_timestamp_seconds` | `binding`, `namespace` | Unix time the namespace's exemption ends unless kar sees another violation there. While violators remain it stays about one TTL ahead; once they are fixed it stops moving |
 | `kar_informer_restarts_total` | `resource` | Informers replaced to re-evaluate a watched resource |
 
 The chart does not create a scrape object. Add one for your agent with `extraObjects` (see [Configuration](#configuration)) and set `honorLabels: true`, or the scrape's own `namespace` label replaces `kar_violations`'s violating namespace.
+
+Time left on each exemption, and whether the namespace is fixed (no `kar_violations` series):
+
+```promql
+kar_exemption_expiry_timestamp_seconds - time()
+kar_exemption_expiry_timestamp_seconds unless on (binding, namespace) kar_violations
+```
 
 Also useful for [Sizing](#sizing): `process_resident_memory_bytes` and `go_memstats_heap_inuse_bytes`.
 
@@ -481,7 +489,7 @@ hack/e2e.sh
 ```
 
 - `K8S_VERSION=1.36|1.37` (default `1.37`) picks the node image.
-- `KAR_VERSION=0.2.2` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.- `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
+- `KAR_VERSION=0.2.3` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.- `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
 - Extra arguments go to the test binary, e.g. `hack/e2e.sh -test.run=TestHardening`.
 
 Logs land in `bin/e2e-logs/`. kubectl, helm and the tests run in a container on the kind Docker network, because VPN clients can drop the host's route to Docker networks.
