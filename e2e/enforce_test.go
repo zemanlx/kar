@@ -125,8 +125,8 @@ func enFirstSeen(ctx context.Context, name, namespace string) (metav1.Time, erro
 	return metav1.Time{}, fmt.Errorf("%w: %s", errEnNotExempt, namespace)
 }
 
-// enExemptGauge returns kar_exempt_namespaces for binding as the leader reports it.
-func enExemptGauge(ctx context.Context, binding string) (float64, error) {
+// enLeaderGauge returns the first sample named name with every label fragment, as the leader reports it.
+func enLeaderGauge(ctx context.Context, name string, labels ...string) (float64, error) {
 	lead, err := leader(ctx)
 	if err != nil {
 		return 0, err
@@ -137,7 +137,7 @@ func enExemptGauge(ctx context.Context, binding string) (float64, error) {
 		return 0, err
 	}
 
-	return metricValue(text, "kar_exempt_namespaces", fmt.Sprintf("binding=%q", binding))
+	return metricValue(text, name, labels...)
 }
 
 // enDryRunDenied returns an error unless a dry-run create of an ownerless Deployment in namespace is denied.
@@ -287,13 +287,23 @@ func TestEnforceAdoption(t *testing.T) {
 	enCheckAdmission(t, f)
 
 	eventually(t, 2*time.Minute, func() error {
-		got, err := enExemptGauge(ctx, f.Name)
+		got, err := enLeaderGauge(ctx, "kar_exempt_namespaces", fmt.Sprintf("binding=%q", f.Name))
 		if err != nil {
 			return err
 		}
 
 		if got != 1 {
 			return fmt.Errorf("%w: %v, want 1", errEnCount, got)
+		}
+
+		expiry, err := enLeaderGauge(ctx, "kar_exemption_expiry_timestamp_seconds",
+			fmt.Sprintf("binding=%q", f.Name), fmt.Sprintf("namespace=%q", f.Violating[0]))
+		if err != nil {
+			return err
+		}
+
+		if now := float64(time.Now().Unix()); expiry <= now {
+			return fmt.Errorf("%w: expiry %v is not after now %v", errEnCount, expiry, now)
 		}
 
 		return nil
