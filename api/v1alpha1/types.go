@@ -52,6 +52,7 @@ const (
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:metadata:annotations="helm.sh/resource-policy=keep"
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Enforcing",type="string",JSONPath=".status.conditions[?(@.type==\"Enforcing\")].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"

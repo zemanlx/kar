@@ -24,14 +24,14 @@ Every supported minor is checked in CI (see [Testing](#testing)).
 ## Install
 
 ```bash
-helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.2.3 -n kar-system --create-namespace
+helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.2.4 -n kar-system --create-namespace
 ```
 
 The image `ghcr.io/zemanlx/kar` is built for `linux/amd64` and `linux/arm64`. The image and the chart carry GitHub build provenance attestations:
 
 ```bash
-gh attestation verify oci://ghcr.io/zemanlx/kar:0.2.3 --owner zemanlx
-gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.2.3 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/kar:0.2.4 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.2.4 --owner zemanlx
 ```
 
 The ClusterRole grants get/list/watch on every resource, Secrets included, because the audit reads whatever a policy matches. To grant less, set `rbac.rules`, or set `rbac.create: false` and bind a ClusterRole you already have. See [Configuration](#configuration).
@@ -442,7 +442,7 @@ A new or changed object is evaluated as its watch event arrives, so a new violat
 
 ## Uninstall
 
-`helm uninstall` removes the Deployment and RBAC, but leaves the CRDs and any objects kar created. The `PolicyExemption` and `-enforce` bindings are owned by the source bindings, not by the Helm release, so they stay and the Deny bindings keep enforcing with a frozen exemption list (no TTL expiry without kar).
+`helm uninstall` removes the Deployment and RBAC, but leaves the CRDs and any objects kar created. The CRD carries `helm.sh/resource-policy: keep`, so GitOps tools that render the chart and prune (Argo CD) also leave it, and its `PolicyExemption` objects, in place. The `PolicyExemption` and `-enforce` bindings are owned by the source bindings, not by the Helm release, so they stay and the Deny bindings keep enforcing with a frozen exemption list (no TTL expiry without kar).
 
 Before uninstall, remove the mode annotations (or delete the source bindings) so kar deletes the generated objects while it is still running:
 
@@ -489,7 +489,7 @@ hack/e2e.sh
 ```
 
 - `K8S_VERSION=1.36|1.37` (default `1.37`) picks the node image.
-- `KAR_VERSION=0.2.3` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.- `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
+- `KAR_VERSION=0.2.4` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.- `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
 - Extra arguments go to the test binary, e.g. `hack/e2e.sh -test.run=TestHardening`.
 
 Logs land in `bin/e2e-logs/`. kubectl, helm and the tests run in a container on the kind Docker network, because VPN clients can drop the host's route to Docker networks.
