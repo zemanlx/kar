@@ -489,7 +489,8 @@ hack/e2e.sh
 ```
 
 - `K8S_VERSION=1.36|1.37` (default `1.37`) picks the node image.
-- `KAR_VERSION=0.2.4` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.- `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
+- `KAR_VERSION=0.2.4` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.
+- `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
 - Extra arguments go to the test binary, e.g. `hack/e2e.sh -test.run=TestHardening`.
 
 Logs land in `bin/e2e-logs/`. kubectl, helm and the tests run in a container on the kind Docker network, because VPN clients can drop the host's route to Docker networks.
