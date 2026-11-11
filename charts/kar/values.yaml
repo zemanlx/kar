@@ -14,4 +14,7 @@ resources:          # 100k Pods / 4000 namespaces peaked at 234 MiB RSS; see REA
     memory: 512Mi
   limits:
     memory: 512Mi
+nodeSelector: {}
+tolerations: []
+affinity: {}
 extraObjects: []    # extra manifests; strings or maps, rendered with tpl
