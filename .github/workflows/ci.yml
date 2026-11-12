@@ -32,7 +32,11 @@ jobs:
                   echo "KUBEBUILDER_ASSETS=$(setup-envtest use ${{ matrix.envtest }} -p path)" >> "$GITHUB_ENV"
 
             - name: Run tests
-              run: go test -count=1 -timeout 20m -v ./...
+              run: go test -race -count=1 -timeout 20m -v -coverpkg=./... -coverprofile=cover.out ./...
+
+            - name: Coverage summary
+              if: matrix.envtest == '1.37.0'
+              run: hack/coverage-summary.sh cover.out >> "$GITHUB_STEP_SUMMARY"
 
     e2e:
         name: E2E (Kubernetes ${{ matrix.k8s }})

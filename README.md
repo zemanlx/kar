@@ -200,7 +200,8 @@ What makes kar re-evaluate:
 | --- | --- |
 | An object is created, updated or deleted | Evaluates it as the event arrives. A new violator exempts its namespace at once, so short-lived objects are not missed. |
 | A namespace's labels or annotations change | Re-lists the watched resources in that namespace only, since a `namespaceSelector` or `namespaceObject` can flip a verdict. |
-| The policy, the source binding or the params it reads change | Starts a new informer for each affected resource and swaps it in once it has synced, so there is no gap. |
+| The policy or the source binding changes | Starts a new informer for each affected resource and swaps it in once it has synced, so there is no gap. |
+| A params object the policy reads (`paramRef`) is created, updated or deleted | Does the same, but replaces each informer at most once a minute, so a burst of params changes costs one re-list and a change applies within about a minute. |
 
 Ownership and failure handling:
 
@@ -497,7 +498,7 @@ kubectl delete crd policyexemptions.kar.zeman.dev
 
 ## Testing
 
-GitHub Actions runs the unit tests, the envtest suite and the kind end-to-end suite on Kubernetes 1.36 and 1.37, golangci-lint and a `go generate ./...` drift check on every push and pull request. Load tests stay local.
+GitHub Actions runs the unit tests and the envtest suite under the race detector, the kind end-to-end suite on Kubernetes 1.36 and 1.37, golangci-lint and a `go generate ./...` drift check on every push and pull request. Load tests stay local. The Test job on Kubernetes 1.37 writes statement coverage per file to its run's summary page (`hack/coverage-summary.sh`).
 
 The envtest suite includes regression checks (`TestRegression*`) on the per-unit costs behind the limits, so a regression fails CI without the hour-long ramps: status bytes per exempt namespace (budget 160, measured 148.4), Deny binding bytes per namespace (75, measured 67.2), heap per watched object (1.5 KiB, measured 0.57 to 0.76) and heap per binding (0.6 MiB, measured 0.2 to 0.29). The byte sizes are deterministic, so their budgets are tight; heap varies, so its budgets are about 2x the highest measured.
 
