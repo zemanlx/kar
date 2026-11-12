@@ -9,6 +9,7 @@
 
 [![CI](https://github.com/zemanlx/kar/actions/workflows/ci.yml/badge.svg)](https://github.com/zemanlx/kar/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/zemanlx/kar)](https://github.com/zemanlx/kar/blob/main/LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/zemanlx/kar/badge)](https://scorecard.dev/viewer/?uri=github.com/zemanlx/kar)
 
 `kar` audits existing cluster resources against opted-in `ValidatingAdmissionPolicy` bindings. It maintains a generated Deny binding that exempts namespaces with violations for a TTL, so a policy can be enforced without breaking workloads that already violate it.
 
@@ -308,7 +309,7 @@ Binary flags (the chart sets `--leader-elect` and `--default-ttl`):
 | `--health-probe-bind-address` | `:8081` | Health and readiness probe listen address |
 | `--leader-elect` | `false` | Only one replica reconciles; the chart always enables this |
 
-`rbac.rules` replaces only the read rule. kar still adds the write rules: `ValidatingAdmissionPolicyBindings`, `ValidatingAdmissionPolicies`, `PolicyExemptions` and their status, and `Events`. A policy that matches a kind missing from `rbac.rules` cannot be listed.
+`rbac.rules` replaces only the read rule. kar still adds its own rules: read on `ValidatingAdmissionPolicies`, and write on `ValidatingAdmissionPolicyBindings`, `PolicyExemptions` and their status, and `Events`. A policy that matches a kind missing from `rbac.rules` cannot be listed.
 
 ```yaml
 rbac:
@@ -376,6 +377,9 @@ Logs are JSON on stderr.
 
 ## Security
 
+Report a vulnerability privately as [SECURITY.md](SECURITY.md) describes. [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/zemanlx/kar) checks the repository weekly and on every push to `main`.
+
+- Image and chart carry build provenance attestations (see [Install](#install)). Releases after 0.2.5 also attach the chart's provenance bundle as `kar-<version>.tgz.intoto.jsonl`.
 - Image is `scratch` with only the static binary. It runs as `65532:65532`.
 - Pod meets Pod Security `restricted`: `runAsNonRoot`, `seccompProfile: RuntimeDefault`, no privilege escalation, all capabilities dropped, read-only root filesystem.
 - Service account token is not automounted. A projected token with a 1h expiry is mounted instead.
@@ -500,4 +504,4 @@ Logs land in `bin/e2e-logs/`. kubectl, helm and the tests run in a container on 
 
 ## Releasing
 
-Set `version` and `appVersion` in `charts/kar/Chart.yaml` to the new version, merge, then push a tag `v<version>` on a commit CI passed, or publish a release with that new tag in the GitHub UI. `.github/workflows/release.yml` fails unless the tag matches both, then publishes the image and chart to GHCR with attestations, creates the GitHub release (or attaches the chart to the one published in the UI), and runs the e2e suite against the published chart and image (`.github/workflows/verify-release.yml`, which can also be run by hand for any released version). A tag with a hyphen, such as `v0.2.0-rc.1`, makes a prerelease.
+Set `version` and `appVersion` in `charts/kar/Chart.yaml` to the new version, merge, then push a tag `v<version>` on a commit CI passed, or publish a release with that new tag in the GitHub UI. `.github/workflows/release.yml` fails unless the tag matches both, then publishes the image and chart to GHCR with attestations, creates the GitHub release with the chart and its provenance bundle (or attaches both to the one published in the UI), and runs the e2e suite against the published chart and image (`.github/workflows/verify-release.yml`, which can also be run by hand for any released version). A tag with a hyphen, such as `v0.2.0-rc.1`, makes a prerelease.

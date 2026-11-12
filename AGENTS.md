@@ -20,7 +20,7 @@ hack/e2e.sh -test.run=TestName                                 # kind e2e, needs
   `SKIP` before calling a change verified.
 - `e2e` and `load` files are behind build tags. Plain `go test` and `golangci-lint run` never compile them.
 - Lint failing with `typecheck` and "export data version" errors means the binary predates the Go toolchain:
-  `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`.
+  `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@<version>`, with the version `ci.yml` pins.
 - Load tests (`-tags load`) run for up to an hour and stay local; see README "Testing".
 
 ## Code
@@ -38,6 +38,18 @@ hack/e2e.sh -test.run=TestName                                 # kind e2e, needs
 - Generated code: change `api/v1alpha1/types.go`, then run `go generate ./...`. Never edit
   `api/v1alpha1/zz_generated.deepcopy.go` or `charts/kar/crds/kar.zeman.dev_policyexemptions.yaml` by hand.
 - `e2e/helpers_test.go` has its own `derivedName`; keep it in step with `internal/controller/binding.go`.
+
+## CI and supply chain
+
+OpenSSF Scorecard (`.github/workflows/scorecard.yml`) scores every push to `main`; results are in the Security tab.
+
+- Pin actions by full commit SHA with a `# vX.Y.Z` comment, and images with `@sha256:`. Dependabot bumps both.
+- No `@latest` and no unverified `curl` downloads in workflows or the Dockerfile; pin the version.
+- Workflows declare `permissions: read-all` or `{}` at the top and grant writes on the job that needs them.
+- Never use `pull_request_target`, and never interpolate `${{ github.event.* }}` into `run:`. Pass it through `env:`.
+- `scorecard.yml` takes no `run:` steps and no top-level `env` or `defaults`, or publishing the results fails.
+- Releases attach the chart's provenance as `kar-<version>.tgz.intoto.jsonl`; keep it.
+- Go version lives in `go.mod` and the Dockerfile `golang` image; change both together. Dependabot does not bump `go.mod`'s `go` line.
 
 ## Boundaries
 
