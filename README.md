@@ -408,7 +408,7 @@ Using kar securely:
 - Verify the image and chart attestations before you install (see [Install](#install)).
 - Narrow kar's reads with `rbac.rules` to the kinds your policies match, so it does not read Secrets it does not need (see [Configuration](#configuration)).
 - Treat the `kar.zeman.dev/mode` and `kar.zeman.dev/ttl` annotations as part of the policy. Whoever can edit them on a source binding can switch enforcement off (`observe` or no `mode`) or lengthen exemptions, so grant `update` on bindings only to the policy owners.
-- Grant write access to `PolicyExemptions`, their status and the generated `<source>-enforce` bindings only to kar. kar recovers its exemptions from them after a restart or leader change, so writing them can exempt namespaces; deleting a `PolicyExemption` restarts the `auto` window.
+- Grant write access to `PolicyExemptions`, their status and the generated `<source>-enforce` bindings only to kar. kar recovers its exemptions from them after a restart or leader change, so writing them can exempt namespaces. Before `auto` switches to enforce, deleting its `PolicyExemption` restarts the observation window.
 - Do not edit a `<source>-enforce` binding by hand. kar takes its fields back on the next pass, within a minute; change the source binding instead.
 - Alert on `Auditable=False`. kar never enforces such a policy; only the source binding applies as written.
 
