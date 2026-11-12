@@ -349,6 +349,22 @@ kar_exemption_expiry_timestamp_seconds unless on (binding, namespace) kar_violat
 
 Also useful for [Sizing](#sizing): `process_resident_memory_bytes` and `go_memstats_heap_inuse_bytes`.
 
+kar writes one cluster-scoped `PolicyExemption` (`kar.zeman.dev/v1alpha1`) per source binding, with the binding's name. It has no spec; `kubectl explain policyexemption.status` shows the same fields:
+
+| Field | Meaning |
+| --- | --- |
+| `status.namespaces[].name` | An exempt namespace: it stores at least one violator |
+| `status.namespaces[].firstSeen` | When kar first saw a violator in it |
+| `status.namespaces[].expiration` | When the exemption ends unless kar sees another violator there |
+| `status.observingSince` | When the `auto` observation window started |
+| `status.observedInputs` | Policy and binding UIDs and generations when the window started; a change restarts it |
+| `status.conditions` | `Auditable`, `Enforcing` and `Synced`, below |
+
+```bash
+kubectl get policyexemptions
+kubectl get policyexemption <source-binding> -o jsonpath='{range .status.namespaces[*]}{.name}{"\t"}{.expiration}{"\n"}{end}'
+```
+
 `PolicyExemption` status carries three conditions:
 
 | Condition | Meaning |
@@ -386,6 +402,15 @@ Report a vulnerability privately as [SECURITY.md](SECURITY.md) describes. [OpenS
 - `enableServiceLinks: false`.
 - Leader election uses a namespaced Role. It grants `create` on Leases (`create` cannot be limited by name) and `get`/`update` only on the Lease `kar.zeman.dev`.
 - Cluster-wide writes are limited to `ValidatingAdmissionPolicyBindings` (create, update, patch, delete), `PolicyExemptions` and their status, and `Events` (create, patch). Everything else is read-only.
+
+Using kar securely:
+
+- Verify the image and chart attestations before you install (see [Install](#install)).
+- Narrow kar's reads with `rbac.rules` to the kinds your policies match, so it does not read Secrets it does not need (see [Configuration](#configuration)).
+- Treat the `kar.zeman.dev/mode` and `kar.zeman.dev/ttl` annotations as part of the policy. Whoever can edit them on a source binding can switch enforcement off (`observe` or no `mode`) or lengthen exemptions, so grant `update` on bindings only to the policy owners.
+- Grant write access to `PolicyExemptions`, their status and the generated `<source>-enforce` bindings only to kar. kar recovers its exemptions from them after a restart or leader change, so writing them can exempt namespaces. Before `auto` switches to enforce, deleting its `PolicyExemption` restarts the observation window.
+- Do not edit a `<source>-enforce` binding by hand. kar takes its fields back on the next pass, within a minute; change the source binding instead.
+- Alert on `Auditable=False`. kar never enforces such a policy; only the source binding applies as written.
 
 ## High availability
 
@@ -501,6 +526,10 @@ hack/e2e.sh
 - Extra arguments go to the test binary, e.g. `hack/e2e.sh -test.run=TestHardening`.
 
 Logs land in `bin/e2e-logs/`. kubectl, helm and the tests run in a container on the kind Docker network, because VPN clients can drop the host's route to Docker networks.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for reporting bugs, proposing changes, and the test and code style rules.
 
 ## Releasing
 

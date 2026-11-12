@@ -65,6 +65,7 @@ type PolicyExemption struct {
 
 // PolicyExemptionStatus is the observed state of a PolicyExemption.
 type PolicyExemptionStatus struct {
+	// Namespaces are the namespaces exempted from the Deny binding because they store a violator.
 	// +listType=map
 	// +listMapKey=name
 	Namespaces []ExemptNamespace `json:"namespaces,omitempty"`
@@ -72,6 +73,7 @@ type PolicyExemptionStatus struct {
 	ObservingSince *metav1.Time `json:"observingSince,omitempty"`
 	// ObservedInputs is "policyUID/policyGeneration/bindingUID/bindingGeneration" when the observation window started.
 	ObservedInputs string `json:"observedInputs,omitempty"`
+	// Conditions are Auditable, Enforcing and Synced.
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -79,8 +81,11 @@ type PolicyExemptionStatus struct {
 
 // ExemptNamespace is a namespace currently exempted and when its exemption expires.
 type ExemptNamespace struct {
-	Name       string      `json:"name"`
-	FirstSeen  metav1.Time `json:"firstSeen"`
+	// Name is the namespace name.
+	Name string `json:"name"`
+	// FirstSeen is when kar first saw a violator in the namespace.
+	FirstSeen metav1.Time `json:"firstSeen"`
+	// Expiration is when the exemption ends unless kar sees another violator in the namespace.
 	Expiration metav1.Time `json:"expiration"`
 }
 
