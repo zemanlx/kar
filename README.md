@@ -502,6 +502,10 @@ hack/e2e.sh
 
 Logs land in `bin/e2e-logs/`. kubectl, helm and the tests run in a container on the kind Docker network, because VPN clients can drop the host's route to Docker networks.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for reporting bugs, proposing changes, and the test and code style rules.
+
 ## Releasing
 
 Set `version` and `appVersion` in `charts/kar/Chart.yaml` to the new version, merge, then push a tag `v<version>` on a commit CI passed, or publish a release with that new tag in the GitHub UI. `.github/workflows/release.yml` fails unless the tag matches both, then publishes the image and chart to GHCR with attestations, creates the GitHub release with the chart and its provenance bundle (or attaches both to the one published in the UI), and runs the e2e suite against the published chart and image (`.github/workflows/verify-release.yml`, which can also be run by hand for any released version). A tag with a hyphen, such as `v0.2.0-rc.1`, makes a prerelease.
