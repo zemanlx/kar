@@ -10,6 +10,7 @@
 [![CI](https://github.com/zemanlx/kar/actions/workflows/ci.yml/badge.svg)](https://github.com/zemanlx/kar/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/zemanlx/kar)](https://github.com/zemanlx/kar/blob/main/LICENSE)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/zemanlx/kar/badge)](https://scorecard.dev/viewer/?uri=github.com/zemanlx/kar)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16624/badge)](https://www.bestpractices.dev/projects/16624)
 
 `kar` audits existing cluster resources against opted-in `ValidatingAdmissionPolicy` bindings. It maintains a generated Deny binding that exempts namespaces with violations for a TTL, so a policy can be enforced without breaking workloads that already violate it.
 
@@ -394,7 +395,7 @@ Logs are JSON on stderr.
 
 ## Security
 
-Report a vulnerability privately as [SECURITY.md](SECURITY.md) describes. [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/zemanlx/kar) checks the repository weekly and on every push to `main`.
+Report a vulnerability privately as [SECURITY.md](SECURITY.md) describes. [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/zemanlx/kar) checks the repository weekly and on every push to `main`, and kar's [OpenSSF Best Practices](https://www.bestpractices.dev/projects/16624) entry records how it meets the passing criteria.
 
 - Image and chart carry build provenance attestations (see [Install](#install)). Releases after 0.2.5 also attach the chart's provenance bundle as `kar-<version>.tgz.intoto.jsonl`.
 - Image is `scratch` with only the static binary. It runs as `65532:65532`.
