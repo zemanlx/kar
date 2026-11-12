@@ -270,6 +270,7 @@ Chart values (`charts/kar/values.yaml`):
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |
 | `replicas` | `3` | Deployment replicas |
 | `defaultTTL` | `192h` | Passed as `--default-ttl`; used when a binding sets no `kar.zeman.dev/ttl` |
+| `fips140` | `false` | `true` sets `GODEBUG=fips140=on`, Go's FIPS 140-3 mode; see [Security](#security) |
 | `resources` | requests `100m` CPU / `512Mi` memory, limit `512Mi` memory, no CPU limit | Pod resources; see [Sizing](#sizing) |
 | `rbac.create` | `true` | Create the ClusterRole. `false` only creates the binding |
 | `rbac.clusterRoleName` | release name | ClusterRole to bind. Required when `rbac.create` is false |
@@ -386,6 +387,8 @@ Report a vulnerability privately as [SECURITY.md](SECURITY.md) describes. [OpenS
 - `enableServiceLinks: false`.
 - Leader election uses a namespaced Role. It grants `create` on Leases (`create` cannot be limited by name) and `get`/`update` only on the Lease `kar.zeman.dev`.
 - Cluster-wide writes are limited to `ValidatingAdmissionPolicyBindings` (create, update, patch, delete), `PolicyExemptions` and their status, and `Events` (create, patch). Everything else is read-only.
+- kar implements no cryptography. Its only network client is the API server connection, over Go's `crypto/tls` with default settings: TLS 1.3 or 1.2 with ephemeral ECDHE key exchange (forward secrecy) and AES-GCM or ChaCha20-Poly1305. The metrics and health endpoints are plain HTTP.
+- `fips140: true` runs kar in Go's FIPS 140-3 mode: TLS uses only FIPS-approved algorithms, and an API server certificate with an RSA key under 2048 bits is rejected.
 
 ## High availability
 
@@ -497,6 +500,7 @@ hack/e2e.sh
 
 - `K8S_VERSION=1.36|1.37` (default `1.37`) picks the node image.
 - `KAR_VERSION=0.2.5` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.
+- `FIPS140=1` installs the chart with `fips140=true`. CI does this for Kubernetes 1.37, so the suite runs in both modes.
 - `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
 - Extra arguments go to the test binary, e.g. `hack/e2e.sh -test.run=TestHardening`.
 

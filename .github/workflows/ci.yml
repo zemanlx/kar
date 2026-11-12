@@ -42,6 +42,11 @@ jobs:
             fail-fast: false
             matrix:
                 k8s: ["1.36", "1.37"] # the versions hack/e2e.sh pins a node image for
+                # One Kubernetes version runs kar in FIPS 140-3 mode, so both modes are tested without renaming the
+                # required E2E checks.
+                include:
+                    - k8s: "1.37"
+                      fips140: "1"
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -57,6 +62,7 @@ jobs:
             - name: Run end-to-end tests
               env:
                   K8S_VERSION: ${{ matrix.k8s }}
+                  FIPS140: ${{ matrix.fips140 || '0' }}
               run: hack/e2e.sh
 
             - name: Upload e2e logs

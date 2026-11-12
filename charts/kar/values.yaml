@@ -4,6 +4,7 @@ image:
   pullPolicy: IfNotPresent
 replicas: 3
 defaultTTL: 192h
+fips140: false      # true sets GODEBUG=fips140=on: FIPS 140-3 approved TLS only, RSA keys under 2048 bits rejected
 rbac:
   create: true       # false binds rbac.clusterRoleName and does not create a ClusterRole
   clusterRoleName: "" # empty uses the release name; required when create is false

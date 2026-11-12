@@ -24,7 +24,7 @@ export KUBECONFIG="$PWD/bin/e2e-kubeconfig"
 # VPNs can drop the host route to docker networks; the kind network is always reachable from a container.
 incluster() {
   docker run --rm -i --network kind --user "$(id -u):$(id -g)" \
-    -e HOME=/tmp -e KUBECONFIG="$PWD/bin/e2e-kubeconfig-internal" \
+    -e HOME=/tmp -e KUBECONFIG="$PWD/bin/e2e-kubeconfig-internal" -e FIPS140="${FIPS140:-0}" \
     -v "$PWD:$PWD" -w "$PWD" -v "$(command -v helm):/usr/local/bin/helm:ro" \
     --entrypoint "$1" "$NODE_IMAGE" "${@:2}"
 }
@@ -68,10 +68,12 @@ EOF
 incluster kubectl create namespace kar-system
 incluster kubectl label namespace kar-system pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted pod-security.kubernetes.io/audit=restricted
 
+fips=()
+[ "${FIPS140:-0}" = 1 ] && fips=(--set fips140=true)
 if [ -n "${KAR_VERSION:-}" ]; then
-  incluster helm install kar oci://ghcr.io/zemanlx/charts/kar --version "$KAR_VERSION" -n kar-system --wait --timeout 3m
+  incluster helm install kar oci://ghcr.io/zemanlx/charts/kar --version "$KAR_VERSION" -n kar-system "${fips[@]}" --wait --timeout 3m
 else
-  incluster helm install kar charts/kar -n kar-system --set image.repository=kar,image.tag=e2e,image.pullPolicy=Never --wait --timeout 3m
+  incluster helm install kar charts/kar -n kar-system --set image.repository=kar,image.tag=e2e,image.pullPolicy=Never "${fips[@]}" --wait --timeout 3m
 fi
 
 CGO_ENABLED=0 go test -c -tags e2e -o bin/e2e.test ./e2e/

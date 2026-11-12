@@ -177,6 +177,42 @@ func TestHardening(t *testing.T) {
 	}
 }
 
+// TestFIPS140 checks that kar runs in Go's FIPS 140-3 mode exactly when hack/e2e.sh installed the chart
+// with fips140 (FIPS140=1).
+func TestFIPS140(t *testing.T) {
+	t.Parallel()
+
+	want := ""
+	if os.Getenv("FIPS140") == "1" {
+		want = "fips140=on"
+	}
+
+	pods, err := karPods(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(pods) == 0 {
+		t.Fatal("no running kar pods")
+	}
+
+	for _, p := range pods {
+		for _, c := range p.Spec.Containers {
+			got := ""
+
+			for _, e := range c.Env {
+				if e.Name == "GODEBUG" {
+					got = e.Value
+				}
+			}
+
+			if got != want {
+				t.Errorf("pod %s container %s: GODEBUG = %q, want %q", p.Name, c.Name, got, want)
+			}
+		}
+	}
+}
+
 // leaseAccess returns the access attributes for verb on the named lease in namespace; an empty name matches any lease.
 func leaseAccess(namespace, verb, name string) authorizationv1.ResourceAttributes {
 	return authorizationv1.ResourceAttributes{
