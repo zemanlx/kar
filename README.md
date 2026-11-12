@@ -26,14 +26,14 @@ Every supported minor is checked in CI (see [Testing](#testing)).
 ## Install
 
 ```bash
-helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.2.5 -n kar-system --create-namespace
+helm install kar oci://ghcr.io/zemanlx/charts/kar --version 0.2.6 -n kar-system --create-namespace
 ```
 
 The image `ghcr.io/zemanlx/kar` is built for `linux/amd64` and `linux/arm64`. The image and the chart carry GitHub build provenance attestations:
 
 ```bash
-gh attestation verify oci://ghcr.io/zemanlx/kar:0.2.5 --owner zemanlx
-gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.2.5 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/kar:0.2.6 --owner zemanlx
+gh attestation verify oci://ghcr.io/zemanlx/charts/kar:0.2.6 --owner zemanlx
 ```
 
 The ClusterRole grants get/list/watch on every resource, Secrets included, because the audit reads whatever a policy matches. To grant less, set `rbac.rules`, or set `rbac.create: false` and bind a ClusterRole you already have. See [Configuration](#configuration).
@@ -398,7 +398,7 @@ Logs are JSON on stderr.
 
 Report a vulnerability privately as [SECURITY.md](SECURITY.md) describes. [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/zemanlx/kar) checks the repository weekly and on every push to `main`, and kar's [OpenSSF Best Practices](https://www.bestpractices.dev/projects/16624) entry records how it meets the passing criteria.
 
-- Image and chart carry build provenance attestations (see [Install](#install)). Releases after 0.2.5 also attach the chart's provenance bundle as `kar-<version>.tgz.intoto.jsonl`.
+- Image and chart carry build provenance attestations (see [Install](#install)). Releases from 0.2.6 also attach the chart's provenance bundle as `kar-<version>.tgz.intoto.jsonl`.
 - Image is `scratch` with only the static binary. It runs as `65532:65532`.
 - Pod meets Pod Security `restricted`: `runAsNonRoot`, `seccompProfile: RuntimeDefault`, no privilege escalation, all capabilities dropped, read-only root filesystem.
 - Service account token is not automounted. A projected token with a 1h expiry is mounted instead.
@@ -526,7 +526,7 @@ hack/e2e.sh
 ```
 
 - `K8S_VERSION=1.36|1.37` (default `1.37`) picks the node image.
-- `KAR_VERSION=0.2.5` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.
+- `KAR_VERSION=0.2.6` tests a published release instead of a local build: the chart from GHCR, which pulls its image from GHCR. The kind nodes need to reach ghcr.io; some VPN clients block that.
 - `FIPS140=1` installs the chart with `fips140=true`. CI does this for Kubernetes 1.37, so the suite runs in both modes.
 - `KEEP_CLUSTER=1` keeps the cluster. Kubeconfig: `bin/e2e-kubeconfig`.
 - Extra arguments go to the test binary, e.g. `hack/e2e.sh -test.run=TestHardening`.

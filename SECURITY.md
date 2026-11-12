@@ -38,7 +38,7 @@ gh attestation verify oci://ghcr.io/zemanlx/kar:<version> --owner zemanlx
 gh attestation verify oci://ghcr.io/zemanlx/charts/kar:<version> --owner zemanlx
 ```
 
-From the release after 0.2.5, each GitHub release also attaches the chart's provenance bundle as `kar-<version>.tgz.intoto.jsonl`. Verify the downloaded chart against it:
+From 0.2.6, each GitHub release also attaches the chart's provenance bundle as `kar-<version>.tgz.intoto.jsonl`. Verify the downloaded chart against it:
 
 ```bash
 gh attestation verify kar-<version>.tgz --bundle kar-<version>.tgz.intoto.jsonl --owner zemanlx
