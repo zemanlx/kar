@@ -189,7 +189,7 @@ func TestParamChangeReevaluates(t *testing.T) {
 	t.Parallel()
 
 	if testing.Short() {
-		t.Skip("a params change restarts the informer once it is a resync old")
+		t.Skip("waits about a minute: a params change replaces the informer only once it is one resync interval old")
 	}
 
 	c := startEnv(t)
