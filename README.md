@@ -396,7 +396,7 @@ Logs are JSON on stderr.
 
 ## Security
 
-Report a vulnerability privately as [SECURITY.md](SECURITY.md) describes. [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/zemanlx/kar) checks the repository weekly and on every push to `main`, and kar's [OpenSSF Best Practices](https://www.bestpractices.dev/projects/16624) entry records how it meets the passing criteria.
+Report a vulnerability privately as [SECURITY.md](SECURITY.md) describes. It also explains [kar's security design](SECURITY.md#security-design): what kar can harm, its trust boundaries and how the design limits the harm. [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/zemanlx/kar) checks the repository weekly and on every push to `main`, and kar's [OpenSSF Best Practices](https://www.bestpractices.dev/projects/16624) entry records how it meets the passing criteria.
 
 - Image and chart carry build provenance attestations (see [Install](#install)). Releases from 0.2.6 also attach the chart's provenance bundle as `kar-<version>.tgz.intoto.jsonl`.
 - Image is `scratch` with only the static binary. It runs as `65532:65532`.
