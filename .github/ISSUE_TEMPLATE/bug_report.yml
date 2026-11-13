@@ -1,0 +1,40 @@
+name: Bug report
+description: kar did something it should not, or did not do what README says.
+labels: [bug]
+body:
+  - type: input
+    id: kar-version
+    attributes:
+      label: kar version
+      description: The chart or image version, for example 0.2.6.
+    validations:
+      required: true
+  - type: input
+    id: k8s-version
+    attributes:
+      label: Kubernetes version
+      description: The output of `kubectl version`, server part.
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The ValidatingAdmissionPolicy, the source binding with its kar annotations, and an object that shows the problem.
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: PolicyExemption status and logs
+      description: |
+        `kubectl get policyexemption <source-binding> -o yaml` and the leader's logs around the problem.
+        Remove anything you do not want public.
+      render: text

@@ -14,7 +14,7 @@ Include:
 - steps to reproduce, with the policies, bindings and objects involved
 - the impact: what an attacker can read, write or bypass
 
-kar is maintained by one person on a best-effort basis. I will acknowledge the report and coordinate the fix and its disclosure through the advisory.
+kar is maintained by one person on a best-effort basis. I will acknowledge the report within 14 days and coordinate the fix and its disclosure through the advisory.
 
 ## Scope
 
@@ -28,6 +28,28 @@ kar writes only:
 - the leader election Lease `kar.zeman.dev` in the release namespace
 
 Reports that kar reads or exposes data beyond what the audited policies need, or writes anything outside the list above, are in scope.
+
+## Security design
+
+What kar can harm, if it fails or is compromised:
+
+- **Confidentiality.** kar reads every object its ClusterRole allows, Secrets included by default. It keeps only a stub per object in memory (name, namespace, resourceVersion and, for a violator, the binding and the policy's message) and serves only metrics and health probes. What it writes out about objects is metadata: each violation is logged with the object's kind, namespace and name, the binding and the policy's message, and the `PolicyExemption` status lists the namespaces with violators. Object content leaves kar only where a policy's `message` or `messageExpression` quotes it.
+- **Enforcement.** kar can create, change and delete any `ValidatingAdmissionPolicyBinding`, not only the ones it derives, because RBAC cannot limit `create` by name and the derived names are not known in advance. A compromised kar could remove admission enforcement or deny requests cluster-wide.
+- **Availability.** A wrong exemption list makes the Deny binding block workloads that already violate a policy, which is what kar exists to prevent.
+
+Trust boundaries:
+
+- Every input comes from the API server, which has already authenticated, authorized and validated it: policies, bindings, the objects they match, namespaces and params. Who can steer kar is decided by who can write those objects, so the annotations on a source binding are as sensitive as the binding itself (see [Using kar securely](README.md#security)).
+- kar has no inbound API. The metrics and health endpoints are read-only plain HTTP.
+- Policy expressions are evaluated by the API server's own admission code, through [kat](https://github.com/zemanlx/kat). kar does not parse or execute anything else from the cluster.
+
+How the design limits the harm:
+
+- **Additive enforcement.** kar never edits or deletes a source binding. The Deny binding it writes adds enforcement; the exemptions only narrow that Deny binding, and the source binding's own actions still apply in exempt namespaces. If kar stops, the last Deny binding keeps enforcing with a frozen exemption list.
+- **Fail-safe for workloads.** When kar cannot evaluate a policy as admission would, for example because it reads `request.userInfo`, it marks it `Auditable=False` and writes no Deny binding rather than guessing. kar does not fake request inputs, and it never truncates its state: a status the API server rejects as too large leaves the last status and Deny binding in place (`StateTooLarge`).
+- **Least privilege.** The only cluster-wide writes are admission bindings, `PolicyExemptions` and their status, and Events. Reads can be narrowed with `rbac.rules`. The leader election Role is namespaced: it grants `create` on Leases (`create` cannot be limited by name) and `get` and `update` only on kar's own Lease. The service account token is projected with a 1h expiry. The pod meets Pod Security `restricted` and runs a static binary on `scratch` with a read-only root filesystem.
+- **Small mechanism.** One binary, no cryptography of its own, no storage other than Kubernetes objects. kar's durable state is the `PolicyExemption` status, which anyone with read access can inspect.
+- **Supply chain.** Dependencies and CI actions are pinned and updated by Dependabot. CodeQL (GitHub's default setup, so there is no workflow file) and golangci-lint, including gosec, run on every pull request, and the tests run under the race detector. Releases are built in GitHub Actions and carry build provenance attestations. [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/zemanlx/kar) checks the repository weekly.
 
 ## Verifying releases
 
