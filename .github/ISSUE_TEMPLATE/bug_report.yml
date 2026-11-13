@@ -26,7 +26,9 @@ body:
     id: reproduce
     attributes:
       label: How to reproduce
-      description: The ValidatingAdmissionPolicy, the source binding with its kar annotations, and an object that shows the problem.
+      description: |
+        The ValidatingAdmissionPolicy, the source binding with its kar annotations, and a minimal object that shows the problem.
+        This issue is public: redact Secret data, credentials and anything else sensitive, and report security problems privately as SECURITY.md describes.
       render: yaml
     validations:
       required: true
